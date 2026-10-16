@@ -248,7 +248,7 @@ final class PersistenceTests: XCTestCase {
         // 新实例、同一个 suite。
         let reopened = makeRepository()
         XCTAssertEqual(try reopened.loadCourses(), sampleCourses)
-        XCTAssertEqual(reopened.loadCourses().count, 2)
+        XCTAssertEqual(try reopened.loadCourses().count, 2)
     }
 
     func testSettingsSurviveRestart() throws {
