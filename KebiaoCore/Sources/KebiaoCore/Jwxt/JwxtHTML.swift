@@ -48,7 +48,10 @@ public final class JwxtHTMLNode {
     /// 该元素在原始 HTML 中的结束偏移（`>` 之后一位）。
     public private(set) var endOffset: Int
     /// 文本节点内容（仅文本节点有值）。
-    public let text: String?
+    ///
+    /// ⚠️ 刻意不叫 `text`：Swift 不允许同一类型里同时存在属性 `text` 与方法 `text()`，
+    /// 同名会直接编译报错 `invalid redeclaration of 'text()'`（本条已由 CI 实证）。
+    public let rawText: String?
     public private(set) var children: [JwxtHTMLNode] = []
     public weak var parent: JwxtHTMLNode?
 
@@ -61,7 +64,7 @@ public final class JwxtHTMLNode {
     ) {
         self.tag = tag
         self.attributes = attributes
-        self.text = text
+        self.rawText = text
         self.startOffset = startOffset
         self.endOffset = endOffset
     }
@@ -76,7 +79,7 @@ public final class JwxtHTMLNode {
 
     /// 对应 jsoup `Element.text()`：按文档顺序拼接后代文本，再做 ASCII 空白归一化。
     public func text() -> String {
-        guard tag != nil else { return JwxtHTMLNode.normaliseASCIIWhitespace(text ?? "") }
+        guard tag != nil else { return JwxtHTMLNode.normaliseASCIIWhitespace(rawText ?? "") }
         var pieces: [String] = []
         collectText(into: &pieces)
         return JwxtHTMLNode.normaliseASCIIWhitespace(pieces.joined())
@@ -109,12 +112,12 @@ public final class JwxtHTMLNode {
     }
 
     private func collectText(into pieces: inout [String]) {
-        if let text {
-            pieces.append(text)
+        if let rawText {
+            pieces.append(rawText)
         }
         for child in children {
             if child.tag == nil {
-                pieces.append(child.text ?? "")
+                pieces.append(child.rawText ?? "")
             } else if JwxtHTMLScanner.isLineBreakTag(child.tag ?? "") {
                 pieces.append(" ")
             } else {
@@ -154,7 +157,12 @@ public final class JwxtHTMLNode {
 // MARK: - 选择器
 
 /// 解析后的单个选择器片段。
-public struct JwxtHTMLSelectorPart: Equatable {
+///
+/// ⚠️ 不声明 `Equatable`：`attributes` 是**元组数组**
+/// （`[(name: String, op: String?, value: String)]`），Swift 无法为含元组的类型合成 `==`，
+/// 声明了会直接编译报错 `does not conform to protocol 'Equatable'`（已由 CI 实证）。
+/// 选择器目前只在解析/匹配内部使用，没有比较需求。
+public struct JwxtHTMLSelectorPart {
     /// 与**上一个**片段的关系：`.child` 表示 `>`，`.descendant` 表示空格。第一个片段恒为 `.descendant`。
     public enum Combinator: Equatable {
         case descendant
@@ -170,7 +178,9 @@ public struct JwxtHTMLSelectorPart: Equatable {
 }
 
 /// 一条选择器（逗号分隔的其中一支）的片段序列。
-public struct JwxtHTMLSelector: Equatable {
+///
+/// 同 `JwxtHTMLSelectorPart`：不声明 `Equatable`（元组成员无法合成 `==`）。
+public struct JwxtHTMLSelector {
     /// 从**左到右**（祖先 → 后代）保存。
     public var parts: [JwxtHTMLSelectorPart]
 }
@@ -191,7 +201,10 @@ public final class JwxtHTMLDocument {
     /// 所有元素，按文档顺序。
     public let allElements: [JwxtHTMLNode]
 
-    private init(source: String, root: JwxtHTMLNode, body: JwxtHTMLNode, allElements: [JwxtHTMLNode]) {
+    /// `fileprivate` 而不是 `private`：构造只允许同文件里的 `JwxtHTMLScanner` 调用，
+    /// 而 Swift 的 `private` 只覆盖「本类型 + 同文件扩展」，跨类型访问必须放宽到 `fileprivate`
+    /// （CI 实证报 `initializer is inaccessible due to 'private' protection level`）。
+    fileprivate init(source: String, root: JwxtHTMLNode, body: JwxtHTMLNode, allElements: [JwxtHTMLNode]) {
         self.source = source
         self.root = root
         self.body = body
@@ -556,18 +569,20 @@ enum JwxtHTMLScanner {
                 }
 
                 let tagEnd = indexOfTagEnd(source, from: i)
+                // `tagEnd` 是 `String.Index`，而节点的 `endOffset` 是 Int 偏移量，
+                // 必须经 `distance(from:to:)` 换算（原先直接把 Index 传给了 Int 形参，编译报错）。
+                let tagLength = source.distance(from: i, to: tagEnd)
                 let attributes = parseAttributes(source, tagNameEnd: nameEnd, tagEnd: tagEnd)
                 let node = JwxtHTMLNode(
                     tag: name,
                     attributes: attributes,
                     startOffset: offset,
-                    endOffset: tagEnd
+                    endOffset: offset + tagLength
                 )
                 stack.last?.append(child: node)
                 allElements.append(node)
 
                 let selfClosing = isSelfClosing(source, tagEnd: tagEnd)
-                let tagLength = source.distance(from: i, to: tagEnd)
                 offset += tagLength
                 i = tagEnd
 
@@ -611,7 +626,10 @@ enum JwxtHTMLScanner {
     /// 找到从 `from`（必须指向 `<`）开始的标签的 `>` 之后一位；找不到则返回源码末尾。
     static func indexOfTagEnd(in source: String, from: Int) -> Int {
         let start = source.index(source.startIndex, offsetBy: min(max(0, from), source.count))
-        return indexOfTagEnd(source, from: start)
+        // 下面调用的重载返回 `String.Index`，而本函数声明返回 Int 偏移量，必须换算回去
+        // （原先直接 `return` 该重载的结果，编译报「无法把 String.Index 转成 Int」）。
+        let end = indexOfTagEnd(source, from: start)
+        return source.distance(from: source.startIndex, to: end)
     }
 
     private static func indexOfTagEnd(_ source: String, from start: String.Index) -> String.Index {
@@ -856,5 +874,32 @@ extension JwxtHTMLNode {
 
     func setEndOffset(_ value: Int) {
         endOffset = value
+    }
+}
+
+// MARK: - 门面
+
+/// `JwxtLoginClient` 直接调用的两个入口，对应原版的两次 jsoup 调用：
+/// - `Jsoup.parse(body).text()`（`QiangzhiJwxtParser$login$2.java:210-217`）
+/// - `Jsoup.parse(body).select("title").text()`（`:232`）
+///
+/// ⚠️ 这两个函数原先**没有实现** —— `JwxtLoginClient.swift:254`、`:368` 引用了并不存在的
+/// 类型 `JwxtHTML`，CI 编译报 `cannot find 'JwxtHTML' in scope`。这里严格按上面两处原版调用
+/// 的语义补齐，不新增任何原版没有的行为。
+public enum JwxtHTML {
+
+    /// 对应 `Jsoup.parse(html).text()`：整篇文档归一化后的文本。
+    ///
+    /// 取 `root`（`html`）的 `text()`，与 jsoup `Document.text()` 的定义一致
+    /// （`<head>` 下的文本同样计入）。原版用它做成功/失败串判定（`:227-229`）。
+    public static func plainText(_ html: String) -> String {
+        JwxtHTMLDocument.parse(html).root.text()
+    }
+
+    /// 对应 `Jsoup.parse(html).select("title").text()`：取第一个 `<title>` 的元素文本。
+    ///
+    /// 没有 `<title>` 时返回空串，对齐原版 `str5` 的初值 `""`（`:233-234`）。
+    public static func title(_ html: String) -> String {
+        JwxtHTMLDocument.parse(html).selectFirst("title")?.text() ?? ""
     }
 }
