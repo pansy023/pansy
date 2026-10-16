@@ -1,0 +1,16 @@
+﻿OK KebiaoCore\Package.swift                                          34 行    1034 字节
+OK KebiaoCore\Sources\KebiaoCore\Logic\JavaHash.swift                41 行    1887 字节
+OK KebiaoCore\Sources\KebiaoCore\Logic\MorandiPalette.swift          77 行    3214 字节
+OK KebiaoCore\Sources\KebiaoCore\Logic\TimetableLayout.swift        319 行   14304 字节
+OK KebiaoCore\Sources\KebiaoCore\Logic\WeekLogic.swift              295 行   12935 字节
+OK KebiaoCore\Sources\KebiaoCore\Models\AppSettings.swift           115 行    5442 字节
+OK KebiaoCore\Sources\KebiaoCore\Models\Course.swift                105 行    4263 字节
+OK KebiaoCore\Sources\KebiaoCore\Models\PeriodTime.swift             28 行     946 字节
+OK KebiaoCore\Sources\KebiaoCore\Models\TimetableProfile.swift       29 行    1203 字节
+OK KebiaoCore\Sources\KebiaoCore\Models\UserCredentials.swift        36 行    1518 字节
+OK KebiaoCore\Tests\KebiaoCoreTests\JavaHashTests.swift              98 行    4138 字节
+OK KebiaoCore\Tests\KebiaoCoreTests\MorandiPaletteTests.swift       141 行    5538 字节
+OK KebiaoCore\Tests\KebiaoCoreTests\TimetableLayoutTests.swift      402 行   17680 字节
+OK KebiaoCore\Tests\KebiaoCoreTests\WeekLogicTests.swift            311 行   13390 字节
+--------------------------------------------------------------------------------------------
+全部通过：14 个 .swift 文件，分隔符配平、编码合规。

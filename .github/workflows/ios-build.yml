@@ -1,0 +1,95 @@
+# 云端 macOS 构建：本机是 Windows，没有 Xcode / xcodegen / swift 工具链，
+# 所以把「真编译 + 真跑单测」这件事交给 GitHub 的 macOS runner。
+#
+# 两个 job 刻意**互不依赖**：单测挂了也要看得到编译错误，编译挂了也要看得到单测结果。
+#
+# 产出物 `Kebiao-unsigned.ipa` 是**未签名**包，不能直接装。它的用途是拿到 Windows 侧
+# 用 SideStore / AltStore 配合你自己的 Apple ID 重新签名后装到 iPhone
+# （免费 Apple ID 签出来的证书 7 天过期，到期需重签）。
+#
+# ⚠️ 本文件同样从未被执行过 —— 它是「第一次 push 到 GitHub 之后会发生什么」的声明。
+
+name: iOS build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── KabiaoCore 纯逻辑层的真实单测 ────────────────────────────────
+  #
+  # 这是全工程唯一能「真跑起来」的验证：周次判断、单双周、Java String.hashCode()
+  # 配色、卡片几何、时间槽、存储往返。App 界面层不在这里。
+  core-tests:
+    name: KebiaoCore 单元测试
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 打印工具链版本
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: swift test
+        working-directory: KebiaoCore
+        run: swift test --parallel
+
+  # ── App：生成 Xcode 工程 → 编译 iOS 真机包 → 打包未签名 IPA ──────
+  app-build:
+    name: 生成工程并编译 iOS App
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 xcodegen
+        run: brew install xcodegen
+
+      - name: 生成 Kebiao.xcodeproj
+        run: xcodegen generate
+
+      # 未签名编译。`CODE_SIGNING_ALLOWED=NO` 一起关掉签名与描述文件校验，
+      # 这样不需要任何证书 / Provisioning Profile 也能验证「代码是否真的能编译」。
+      - name: 编译（iPhone 真机，未签名）
+        run: |
+          xcodebuild \
+            -project Kebiao.xcodeproj \
+            -scheme Kebiao \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      # 编不出来就直接失败，绝不产出一个空壳 IPA 冒充成功。
+      - name: 校验产物存在并打印关键字段
+        run: |
+          APP="build/Build/Products/Release-iphoneos/Kebiao.app"
+          test -d "$APP" || { echo "::error::没有生成 $APP，编译实际失败"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist"
+
+      - name: 打包未签名 IPA
+        run: |
+          APP="build/Build/Products/Release-iphoneos/Kebiao.app"
+          rm -rf Payload && mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry Kebiao-unsigned.ipa Payload
+          ls -l Kebiao-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kebiao-unsigned-ipa
+          path: Kebiao-unsigned.ipa
+          if-no-files-found: error

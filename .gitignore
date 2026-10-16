@@ -1,0 +1,20 @@
+# Xcode / XcodeGen 产物：工程描述在 project.yml，.xcodeproj 一律由 `xcodegen generate` 生成，
+# 不入库（避免二进制工程文件与 project.yml 两份真相打架）。
+*.xcodeproj
+*.xcworkspace
+# xcodegen 依 project.yml 的 `info:` 块生成，不许手写，所以也不入库。
+apps/Kebiao/Info.plist
+
+# 构建产物
+build/
+DerivedData/
+Payload/
+*.ipa
+*.xcarchive
+
+# SwiftPM
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store

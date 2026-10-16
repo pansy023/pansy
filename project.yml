@@ -1,0 +1,110 @@
+# XcodeGen 工程描述。
+#
+# 在 macOS 上执行：  cd <工程根> && xcodegen generate
+# 生成 `Kebiao.xcodeproj` 后用 Xcode 打开即可（阶段⑥）。
+#
+# ⚠️ 本机（Windows）既没有 xcodegen 也没有 Xcode，**这份文件从未被 xcodegen 解析验证过**。
+#    它描述的是「在 Mac 上应该生成什么」，不是「已经生成成功」。
+#
+# 目录约定：
+#   apps/Kebiao/          ← SwiftUI App（界面层），依赖本地 package KebiaoCore
+#   KebiaoCore/           ← Swift Package（模型 / 算法 / 存储），可脱离 Xcode 用 `swift test` 跑
+#   apps/KebiaoWidget/    ← 阶段⑤（WidgetKit），**尚未创建**，所以下面的 target 先注释掉
+
+name: Kebiao
+
+options:
+  bundleIdPrefix: com.kebiaocom.example
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+  groupSortPosition: top
+
+settings:
+  base:
+    # ⚠️ 这里写的是**语言模式**，不是 Swift 工具链版本 —— 对应 `swiftc -swift-version`，
+    #    它只认 4 / 4.2 / 5 / 6。原先误写成 5.9（那是 `swift-tools-version` 的写法，
+    #    见 KebiaoCore/Package.swift），有被 swiftc 直接拒收的风险。
+    #    5.0 = Swift 5 语言模式，正是本工程想要的（数据竞争检查只报警告，不报错）。
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    # 阶段⑦：填入自己的 Apple 开发者 Team ID 后再签名到真机
+    DEVELOPMENT_TEAM: ""
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+    CLANG_ENABLE_MODULES: YES
+
+packages:
+  KebiaoCore:
+    path: KebiaoCore
+
+targets:
+  Kebiao:
+    type: application
+    platform: iOS
+    sources:
+      - path: apps/Kebiao
+    dependencies:
+      - package: KebiaoCore
+        product: KebiaoCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kebiaocom.example.kebiao
+        PRODUCT_NAME: Kebiao
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # Android 版只针对手机，iOS 也先只做 iPhone（避免为 iPad 做未验证的布局）
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_PREVIEWS: YES
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: apps/Kebiao/Info.plist
+      properties:
+        CFBundleDisplayName: 上课早枝道
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # 阶段⑤：自动刷新用 BGAppRefreshTask（依据 docs/recon/03-reminder-and-refresh.md §6）
+        UIBackgroundModes:
+          - fetch
+        ITSAppUsesNonExemptEncryption: false
+        # 阶段④：教务地址若走 http 明文，需要按实测地址补 ATS 例外。
+        # iOS 默认禁止明文 HTTP，这里**不预先放开**（见 docs/recon/02-jwxt-login-and-parser.md）。
+
+  # ── 阶段⑤ 桌面小组件（WidgetKit）─────────────────────────────
+  # 目录 `apps/KebiaoWidget/` 尚未创建，且**还没有 WidgetKit 的取证/设计文档**
+  # （Android 的 RemoteViews 布局不能照搬），所以先不声明 target。
+  # 届时取消注释并补上目录：
+  #
+  # KebiaoWidget:
+  #   type: app-extension
+  #   platform: iOS
+  #   sources:
+  #     - path: apps/KebiaoWidget
+  #   dependencies:
+  #     - package: KebiaoCore
+  #       product: KebiaoCore
+  #     - target: Kebiao
+  #   settings:
+  #     base:
+  #       PRODUCT_BUNDLE_IDENTIFIER: com.kebiaocom.example.kebiao.widget
+  #   info:
+  #     path: apps/KebiaoWidget/Info.plist
+  #     properties:
+  #       NSExtension:
+  #         NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+schemes:
+  Kebiao:
+    build:
+      targets:
+        Kebiao: all
+    run:
+      config: Debug
+    # KebiaoCore 的单元测试不属于 App target，用 `swift test` 在 KebiaoCore/ 下跑
+    # （见 README.md §4）。不要在这里加 package 的测试 target，XcodeGen 的
+    # scheme.test.targets 只接受本工程内的 target。

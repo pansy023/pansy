@@ -1,0 +1,806 @@
+import Foundation
+
+// MARK: - key 字面量
+
+/// Android 端 `SharedPreferences` 的全部 key 字面量，逐字抄自
+/// `上课早枝道-iOS/docs/recon/storage.md`；每条注释给出该文档的行号与
+/// `LocalStorage.java` 的行号（后者都在
+/// `上课早枝道-源码-1.11.5/app/src/main/java/kebiaocom/example/data/LocalStorage.java`）。
+///
+/// 为什么一个字面量都不许改：iOS 端要能读 Android 端已经落盘的
+/// `shared_prefs/timetable_prefs.xml`（storage.md §1.1，:25-32），键名对不上就等于丢数据。
+enum TimetablePrefsKey {
+
+    // MARK: 凭据 —— storage.md §2.1（写 `LocalStorage.java:41`，读 `:46-57`）
+
+    /// 教务系统账号。storage.md:92，默认空串（`LocalStorage.java:46`）。
+    static let username = "username"
+
+    /// 教务系统密码。storage.md:93。
+    ///
+    /// ⚠️ Android 端把密码**明文**写在这个 key 上 —— storage.md §4.2（:315-343）给了
+    /// 六条证据链（写入侧无变换、读取侧无逆变换、无 crypto/base64 import、smali 交叉验证等）。
+    /// iOS 端只保留这个字面量用于「明文 → 钥匙串」的一次性迁移与清空，
+    /// 正常写入路径绝不碰它（见 `saveCredentials`）。
+    static let password = "password"
+
+    /// 教务系统根 URL。storage.md:94，默认 `UserCredentials.defaultJwxtUrl`。
+    static let jwxtUrl = "jwxtUrl"
+
+    // MARK: AppSettings 的 26 个持久化字段 —— storage.md §2.2（:98-132），顺序与表一致
+
+    /// `backgroundImageUri`，String?，默认 null。storage.md:105（`LocalStorage.java:64` / `:68`）。
+    static let backgroundImageUri = "backgroundImageUri"
+    /// `periodsPerDay`，Int，默认 12。storage.md:106。
+    static let periodsPerDay = "periodsPerDay"
+    /// `periodDurationMinutes`，Int，默认 45。storage.md:107。
+    static let periodDurationMinutes = "periodDurationMinutes"
+    /// `breakDurationMinutes`，Int，默认 10。storage.md:108。
+    static let breakDurationMinutes = "breakDurationMinutes"
+    /// `firstPeriodStartTime`，String（非空），默认 08:00。storage.md:109。
+    static let firstPeriodStartTime = "firstPeriodStartTime"
+    /// `firstWeekStartDate`，String?，默认 null。storage.md:110。
+    static let firstWeekStartDate = "firstWeekStartDate"
+    /// `semesterWeeks`，Int，默认 20。storage.md:111。
+    static let semesterWeeks = "semesterWeeks"
+    /// `showSaturday`，Boolean，缺 key 时回退 `showWeekend`。storage.md:112。
+    static let showSaturday = "showSaturday"
+    /// `showSunday`，Boolean，缺 key 时回退 `showWeekend`。storage.md:113。
+    static let showSunday = "showSunday"
+    /// `showNonCurrentWeekCourses`，Boolean，默认 false。storage.md:114。
+    static let showNonCurrentWeekCourses = "showNonCurrentWeekCourses"
+    /// `showWeekSlider`，Boolean，默认 false。storage.md:115。
+    static let showWeekSlider = "showWeekSlider"
+    /// `reverseMainText`，Boolean，默认 false（1.11.5 功能已停用）。storage.md:116。
+    static let reverseMainText = "reverseMainText"
+    /// `autoCheckUpdate`，Boolean。读侧字面量 false、Kotlin 默认 true，冲突见 §9 U3。storage.md:117。
+    static let autoCheckUpdate = "autoCheckUpdate"
+    /// `autoSyncTimetableFromJwxt`，Boolean，默认 false。storage.md:118。
+    static let autoSyncTimetableFromJwxt = "autoSyncTimetableFromJwxt"
+    /// `selectedTimetableProfileId`，String，默认 `default`。storage.md:119、§5.4。
+    static let selectedTimetableProfileId = "selectedTimetableProfileId"
+    /// `classReminderEnabled`，Boolean，默认 false。storage.md:120。
+    static let classReminderEnabled = "classReminderEnabled"
+    /// `classReminderMode`，String，默认 `weak`。storage.md:121。
+    static let classReminderMode = "classReminderMode"
+    /// `classReminderMinutes`，Int，默认 10。storage.md:122。
+    static let classReminderMinutes = "classReminderMinutes"
+    /// `nonCurrentWeekCourseAlphaPercent`，Int，默认 45。storage.md:123。
+    static let nonCurrentWeekCourseAlphaPercent = "nonCurrentWeekCourseAlphaPercent"
+    /// `courseCardAlphaPercent`，Int，默认 100。storage.md:124。
+    static let courseCardAlphaPercent = "courseCardAlphaPercent"
+    /// `courseFrostedIntensityPercent`，Int，默认 100。storage.md:125。
+    static let courseFrostedIntensityPercent = "courseFrostedIntensityPercent"
+    /// `courseCellHeightDp`，Int，默认 69。storage.md:126。
+    static let courseCellHeightDp = "courseCellHeightDp"
+    /// `courseTextSizeSp`，Int，默认 10。storage.md:127。
+    static let courseTextSizeSp = "courseTextSizeSp"
+    /// `showCourseTime`，Boolean，默认 true。storage.md:128。
+    static let showCourseTime = "showCourseTime"
+    /// `showCourseLocation`，Boolean，默认 true。storage.md:129。
+    static let showCourseLocation = "showCourseLocation"
+    /// `showCourseTeacher`，Boolean，默认 true。storage.md:130。
+    static let showCourseTeacher = "showCourseTeacher"
+
+    /// 旧版遗留 key，**只读**、1.11.5 不再写入。storage.md:138（`LocalStorage.java:77`、`:79`）。
+    ///
+    /// 逐字语义见 storage.md:144-145：
+    /// `getBoolean("showSaturday", getBoolean("showWeekend", false))`。
+    static let showWeekend = "showWeekend"
+
+    // MARK: 业务 JSON 容器 —— storage.md §2.3（:148-153）
+
+    /// 全部课程，String 内含 JSON 数组，默认空串 = 空列表。storage.md:152（写 `:111`，读 `:118-124`）。
+    static let coursesJson = "courses_json"
+
+    /// 全部课表档案，String 内含 JSON 数组，默认空串 = 默认档案。
+    /// storage.md:153（写 `LocalStorage.java:187`，读 `:193-197`）。
+    static let profilesJson = "timetable_profiles_json"
+
+    // MARK: 提醒 —— storage.md §2.4（:155-159）与 §7.1（:561-567）
+
+    /// 已排程提醒的 `courseId_触发毫秒` 列表，String 内含 JSON **字符串**数组，默认空串。
+    /// storage.md:159（写 `CourseReminderScheduler.java:140`，读 `:145-149`）。
+    static let reminderAlarmIds = "reminder_alarm_ids"
+
+    // MARK: 弹窗与 UI 开关 —— storage.md §2.5（:171-178）
+
+    /// 免责声明永久不再提示，Boolean，默认 false。storage.md:175（`LocalStorage.java:282` / `:286`）。
+    static let disclaimerDontShow = "disclaimer_dont_show"
+
+    /// 使用引导永久不再提示，Boolean，默认 false。storage.md:176（`LocalStorage.java:290` / `:294`）。
+    static let usageGuideDontShow = "usage_guide_dont_show"
+
+    /// 深色模式，Boolean，默认 false。storage.md:177（`ThemeMode.java:28` / `:51`）。
+    static let uiDarkMode = "ui_dark_mode"
+
+    /// 优化模式（单色），Boolean，默认 false。storage.md:178（`OptimizeMode.java:28` / `:62`）。
+    static let uiOptimizeMode = "ui_optimize_mode"
+
+    // MARK: 日志 —— storage.md §2.6（:180-185）
+
+    /// 日志总开关，Boolean，**默认 true**。storage.md:184（`LogManager.java:277` / `:282`）。
+    ///
+    /// ⚠️ 这个 key 属于**另一个** `SharedPreferences` 文件 `log_prefs`（storage.md §1.2，:55-62），
+    /// 不在 `timetable_prefs` 里，所以它**不在** `clearedKeys` 中：原版 `clearAll()` 只清
+    /// `timetable_prefs`，清完 `log_enabled` 仍然存活（storage.md:729 第 4 条）。
+    static let logEnabled = "log_enabled"
+
+    // MARK: 清空范围
+
+    /// `LocalStorage.clearAll()` 实际清掉的 key 集合。
+    ///
+    /// 证据：storage.md:75-82 —— 原版方法体是
+    /// `this.prefs.edit().clear().apply()`（`LocalStorage.java:164-166`），
+    /// 也就是**清空 `timetable_prefs` 整个文件的全部 key**：
+    /// 课表数据、设置、档案、提醒记录、凭据（含明文密码）、弹窗标记、`ui_dark_mode` / `ui_optimize_mode`
+    /// 全在内；唯一不受影响的是另一个文件里的 `log_enabled`（storage.md:729）。
+    ///
+    /// iOS 端这里**显式列举**而不是用 `removePersistentDomain(forName:)`：
+    /// 注入进来的 `UserDefaults` 可能就是 `.standard`，按域清空会连带删掉不属于本 App 数据的键。
+    static let clearedKeys: [String] = [
+        username,
+        password,
+        jwxtUrl,
+        backgroundImageUri,
+        periodsPerDay,
+        periodDurationMinutes,
+        breakDurationMinutes,
+        firstPeriodStartTime,
+        firstWeekStartDate,
+        semesterWeeks,
+        showSaturday,
+        showSunday,
+        showWeekend,
+        showNonCurrentWeekCourses,
+        showWeekSlider,
+        reverseMainText,
+        autoCheckUpdate,
+        autoSyncTimetableFromJwxt,
+        selectedTimetableProfileId,
+        classReminderEnabled,
+        classReminderMode,
+        classReminderMinutes,
+        nonCurrentWeekCourseAlphaPercent,
+        courseCardAlphaPercent,
+        courseFrostedIntensityPercent,
+        courseCellHeightDp,
+        courseTextSizeSp,
+        showCourseTime,
+        showCourseLocation,
+        showCourseTeacher,
+        coursesJson,
+        profilesJson,
+        reminderAlarmIds,
+        disclaimerDontShow,
+        usageGuideDontShow,
+        uiDarkMode,
+        uiOptimizeMode
+    ]
+}
+
+// MARK: - 容错解码 DTO
+
+/// `courses_json` 里的单个课程对象。
+///
+/// 所有字段都可选，是为了复刻 `LocalStorage.java:137-151` 的 `optInt` / `optString`
+/// 「取不到就给兜底值」语义；`??` 右侧的字面量逐字取自 storage.md §3.3（:244-259）
+/// 的「读取兜底默认值」列。
+///
+/// 有意偏离：storage.md §3.4（:294）说某元素不是 JSON 对象时原版**跳过该元素**；
+/// 这里让 `JSONDecoder` 把它当成解码失败（→ `decodingFailed`），因为任务要求
+/// 「不得静默吞掉解码错误」。字段级缺失仍然是宽容的（走下面的兜底值）。
+private struct CourseDTO: Decodable {
+    var id: Int?
+    var name: String?
+    var teacher: String?
+    var location: String?
+    var dayOfWeek: Int?
+    var startPeriod: Int?
+    var endPeriod: Int?
+    var color: Int?
+    var weekRange: String?
+    var startWeek: Int?
+    var endWeek: Int?
+    var isOdd: Int?
+
+    /// 兜底值逐字取自 storage.md §3.3；`color` 的 -11751600 就是 `0xFF4C8DF0`。
+    func course() -> Course {
+        Course(
+            id: id ?? 0,
+            name: name ?? "",
+            teacher: teacher ?? "",
+            location: location ?? "",
+            dayOfWeek: dayOfWeek ?? 1,
+            startPeriod: startPeriod ?? 1,
+            endPeriod: endPeriod ?? 1,
+            color: color ?? -11751600,
+            weekRange: weekRange ?? "1-20",
+            startWeek: startWeek ?? 1,
+            endWeek: endWeek ?? 20,
+            isOdd: isOdd ?? 0
+        )
+    }
+}
+
+/// `timetable_profiles_json` 里档案内嵌 `periodTimes` 数组的单个元素。
+/// 兜底值见 storage.md §5.2（:387-389）：`index` → `j + 1`、`start` → `08:00`、`end` → `08:45`。
+private struct PeriodTimeDTO: Decodable {
+    var index: Int?
+    var start: String?
+    var end: String?
+}
+
+/// `timetable_profiles_json` 里的单个档案。
+///
+/// 兜底值逐字取自 storage.md §5.2（:383-386）：
+/// `id` → `profile_` + 下标、`name` → `课表` + (下标+1)、
+/// `periodsPerDay` → `coerceAtLeast(periodTimes.size, 1)`、`periodTimes` → 空数组。
+private struct TimetableProfileDTO: Decodable {
+    var id: String?
+    var name: String?
+    var periodsPerDay: Int?
+    var periodTimes: [PeriodTimeDTO]?
+
+    /// - Parameter position: 该档案在 JSON 数组里的下标（0 起），只用于生成兜底 id / name。
+    func profile(position: Int) -> TimetableProfile {
+        let rawTimes = periodTimes ?? []
+        let times = rawTimes.enumerated().map { pair in
+            PeriodTime(
+                index: pair.element.index ?? (pair.offset + 1),
+                start: pair.element.start ?? "08:00",
+                end: pair.element.end ?? "08:45"
+            )
+        }
+        // storage.md §5.2 末段（:416）与 §9 第 7 条（:732）：读取时按 `index` 升序重排，
+        // JSON 里的顺序不被信任（`LocalStorage.java:236-242` 用 `ComparisonsKt.compareValues`）。
+        // 原版 `Collections.sort` 是稳定排序，所以 index 相同时用原始下标做次关键字，
+        // 保证读取结果与原版一致而不是「顺序随机」。
+        let sorted = times.enumerated().sorted { lhs, rhs in
+            if lhs.element.index != rhs.element.index {
+                return lhs.element.index < rhs.element.index
+            }
+            return lhs.offset < rhs.offset
+        }.map { pair in pair.element }
+        return TimetableProfile(
+            id: id ?? ("profile_" + String(position)),
+            name: name ?? ("课表" + String(position + 1)),
+            periodsPerDay: periodsPerDay ?? max(rawTimes.count, 1),
+            periodTimes: sorted
+        )
+    }
+}
+
+// MARK: - 真实落盘实现
+
+/// `UserDefaults` + 钥匙串的真实落盘实现，键名 / 类型 / 默认值全部对齐
+/// `docs/recon/storage.md`。
+///
+/// 与 Android 端**唯一的**结构性差异是密码的落地位置：原版把明文密码写进
+/// `timetable_prefs`（storage.md §4.2），iOS 端把密码交给注入的 `SecretStore`
+/// （生产是 `KeychainSecretStore`），UserDefaults 里只留 `username` / `jwxtUrl`。
+/// 理由见 `UserCredentials.swift:7-10` 的安全要求与 m03200 第七节。
+///
+/// 其它有意偏离（都在对应方法上注明）：`autoCheckUpdate` 缺 key 取 false（storage.md §9 U3
+/// 明确要求）、`reverseMainText` 按字段真实值写而不学 Android 写死 false、
+/// 解析不宽容的部分一律报 `decodingFailed` 而不是静默回落。
+public final class UserDefaultsTimetableRepository: TimetableRepository {
+
+    // MARK: 注入依赖
+
+    /// 偏好库。生产用 `.standard`；测试注入 `UserDefaults(suiteName:)`，绝不碰真实用户偏好。
+    public let defaults: UserDefaults
+
+    /// 密码的落盘缝。生产用 `KeychainSecretStore`；测试注入 `InMemorySecretStore`，不碰真钥匙串。
+    public let secretStore: SecretStore
+
+    /// 密码在 `SecretStore` 里的名字。沿用 Android 的 key 字面量，便于对照与迁移。
+    public let secretKey: String
+
+    public init(
+        defaults: UserDefaults = .standard,
+        secretStore: SecretStore = KeychainSecretStore(),
+        secretKey: String = SecretKey.jwxtPassword
+    ) {
+        self.defaults = defaults
+        self.secretStore = secretStore
+        self.secretKey = secretKey
+    }
+
+    // MARK: - 课程（storage.md §2.3 + §3）
+
+    /// 读 `courses_json`。
+    ///
+    /// 缺 key 或空串 / 全空白 → 空列表（storage.md:152 的「空串 → `emptyList()`」，
+    /// 即 `LocalStorage.java:118-124` 的 `isBlank()` 分支）。
+    /// 键存在但整体 JSON 非法 → `decodingFailed`（原版 `LocalStorage.java:158-161` 是记日志后
+    /// 回落 `emptyList()`；任务要求 iOS 端必须显式报错）。
+    public func loadCourses() throws -> [Course] {
+        guard let raw = jsonString(forKey: TimetablePrefsKey.coursesJson) else { return [] }
+        do {
+            let items = try JSONDecoder().decode([CourseDTO].self, from: Data(raw.utf8))
+            return items.map { item in item.course() }
+        } catch {
+            throw TimetableRepositoryError.decodingFailed(
+                key: TimetablePrefsKey.coursesJson,
+                reason: describe(error)
+            )
+        }
+    }
+
+    /// 写 `courses_json`。
+    ///
+    /// Android 把整表序列化成**一条** JSON 字符串存在单个 key 里，顶层是数组
+    /// （storage.md §3.1，:214-216）；`Course` 的属性名与 §3.3 的 JSON 键名逐字相同，
+    /// 所以直接交给 `JSONEncoder` 就能得到同一形状（12 个字段全非空，不会有 null）。
+    ///
+    /// 注意：「写空数组」得到的是 `[]` 而不是空串 —— 与 Android 一致
+    /// （`new JSONArray().toString()` 就是 `[]`）；空串只代表「从未写过」。
+    public func saveCourses(_ courses: [Course]) throws {
+        do {
+            let data = try JSONEncoder().encode(courses)
+            defaults.set(String(decoding: data, as: UTF8.self), forKey: TimetablePrefsKey.coursesJson)
+        } catch {
+            throw TimetableRepositoryError.writeFailed(
+                key: TimetablePrefsKey.coursesJson,
+                reason: describe(error)
+            )
+        }
+    }
+
+    // MARK: - 设置（storage.md §2.2）
+
+    /// 空库（26 个 key 全不存在）时 `loadSettings()` 的返回值。
+    ///
+    /// 逐条对应 storage.md §2.2 的「默认值」列（:102-130）；两处**刻意不等于**
+    /// `AppSettings.default`：
+    /// - `id` 取 0 —— `id` 既不写也不读（§2.2 第 1 行 :104、§7.5 :601），
+    ///   原版读取处首参传的就是 0（`LocalStorage.java:89`）；反编译无法 100% 排除 1（§9 U2）。
+    /// - `autoCheckUpdate` 取 false —— 读取侧字面量是 `getBoolean("autoCheckUpdate", false)`
+    ///   （`LocalStorage.java:83`），§9 U3 明确要求 iOS「首次启动未写入」必须取 false，
+    ///   否则行为与 Android 不一致。注意 `AppSettings.default.autoCheckUpdate` 是 true。
+    public static let settingsWhenStoreIsEmpty = AppSettings(
+        id: 0,
+        backgroundImageUri: nil,
+        periodsPerDay: 12,
+        periodDurationMinutes: 45,
+        breakDurationMinutes: 10,
+        firstPeriodStartTime: "08:00",
+        firstWeekStartDate: nil,
+        semesterWeeks: 20,
+        showSaturday: false,
+        showSunday: false,
+        showNonCurrentWeekCourses: false,
+        showWeekSlider: false,
+        reverseMainText: false,
+        autoCheckUpdate: false,
+        autoSyncTimetableFromJwxt: false,
+        selectedTimetableProfileId: "default",
+        classReminderEnabled: false,
+        classReminderMode: "weak",
+        classReminderMinutes: 10,
+        nonCurrentWeekCourseAlphaPercent: 45,
+        courseCardAlphaPercent: 100,
+        courseFrostedIntensityPercent: 100,
+        courseCellHeightDp: 69,
+        courseTextSizeSp: 10,
+        showCourseTime: true,
+        showCourseLocation: true,
+        showCourseTeacher: true
+    )
+
+    /// 逐 key 读设置。
+    ///
+    /// 每个字段一个独立 key（不是一条 JSON），见 storage.md §2.2 :100 与 §2.7 的类型汇总 :192。
+    /// 缺 key 一律回落到 `settingsWhenStoreIsEmpty` 里对应的兜底值；
+    /// 只有 `showSaturday` / `showSunday` 特殊：兜底值是「旧 key `showWeekend` 的值」，
+    /// 逐字对应 storage.md:144-145 的嵌套 `getBoolean`。
+    ///
+    /// 本方法不抛错（设置项都是标量，没有可损坏的 JSON），但按协议保留 `throws`。
+    public func loadSettings() throws -> AppSettings {
+        var settings = Self.settingsWhenStoreIsEmpty
+        // 旧 key 的兜底值：`getBoolean("showWeekend", false)`（LocalStorage.java:77、:79）。
+        let legacyWeekend = boolValue(TimetablePrefsKey.showWeekend, fallback: false)
+
+        settings.backgroundImageUri = optionalString(TimetablePrefsKey.backgroundImageUri)
+        settings.periodsPerDay = intValue(TimetablePrefsKey.periodsPerDay, fallback: settings.periodsPerDay)
+        settings.periodDurationMinutes = intValue(
+            TimetablePrefsKey.periodDurationMinutes,
+            fallback: settings.periodDurationMinutes
+        )
+        settings.breakDurationMinutes = intValue(
+            TimetablePrefsKey.breakDurationMinutes,
+            fallback: settings.breakDurationMinutes
+        )
+        settings.firstPeriodStartTime = stringValue(
+            TimetablePrefsKey.firstPeriodStartTime,
+            fallback: settings.firstPeriodStartTime
+        )
+        settings.firstWeekStartDate = optionalString(TimetablePrefsKey.firstWeekStartDate)
+        settings.semesterWeeks = intValue(TimetablePrefsKey.semesterWeeks, fallback: settings.semesterWeeks)
+        settings.showSaturday = boolValue(TimetablePrefsKey.showSaturday, fallback: legacyWeekend)
+        settings.showSunday = boolValue(TimetablePrefsKey.showSunday, fallback: legacyWeekend)
+        settings.showNonCurrentWeekCourses = boolValue(
+            TimetablePrefsKey.showNonCurrentWeekCourses,
+            fallback: settings.showNonCurrentWeekCourses
+        )
+        settings.showWeekSlider = boolValue(TimetablePrefsKey.showWeekSlider, fallback: settings.showWeekSlider)
+        settings.reverseMainText = boolValue(TimetablePrefsKey.reverseMainText, fallback: settings.reverseMainText)
+        settings.autoCheckUpdate = boolValue(TimetablePrefsKey.autoCheckUpdate, fallback: settings.autoCheckUpdate)
+        settings.autoSyncTimetableFromJwxt = boolValue(
+            TimetablePrefsKey.autoSyncTimetableFromJwxt,
+            fallback: settings.autoSyncTimetableFromJwxt
+        )
+        settings.selectedTimetableProfileId = stringValue(
+            TimetablePrefsKey.selectedTimetableProfileId,
+            fallback: settings.selectedTimetableProfileId
+        )
+        settings.classReminderEnabled = boolValue(
+            TimetablePrefsKey.classReminderEnabled,
+            fallback: settings.classReminderEnabled
+        )
+        settings.classReminderMode = stringValue(
+            TimetablePrefsKey.classReminderMode,
+            fallback: settings.classReminderMode
+        )
+        settings.classReminderMinutes = intValue(
+            TimetablePrefsKey.classReminderMinutes,
+            fallback: settings.classReminderMinutes
+        )
+        settings.nonCurrentWeekCourseAlphaPercent = intValue(
+            TimetablePrefsKey.nonCurrentWeekCourseAlphaPercent,
+            fallback: settings.nonCurrentWeekCourseAlphaPercent
+        )
+        settings.courseCardAlphaPercent = intValue(
+            TimetablePrefsKey.courseCardAlphaPercent,
+            fallback: settings.courseCardAlphaPercent
+        )
+        settings.courseFrostedIntensityPercent = intValue(
+            TimetablePrefsKey.courseFrostedIntensityPercent,
+            fallback: settings.courseFrostedIntensityPercent
+        )
+        settings.courseCellHeightDp = intValue(
+            TimetablePrefsKey.courseCellHeightDp,
+            fallback: settings.courseCellHeightDp
+        )
+        settings.courseTextSizeSp = intValue(
+            TimetablePrefsKey.courseTextSizeSp,
+            fallback: settings.courseTextSizeSp
+        )
+        settings.showCourseTime = boolValue(TimetablePrefsKey.showCourseTime, fallback: settings.showCourseTime)
+        settings.showCourseLocation = boolValue(
+            TimetablePrefsKey.showCourseLocation,
+            fallback: settings.showCourseLocation
+        )
+        settings.showCourseTeacher = boolValue(
+            TimetablePrefsKey.showCourseTeacher,
+            fallback: settings.showCourseTeacher
+        )
+        return settings
+    }
+
+    /// 逐 key 写设置。26 个字段全写，`id` 不写（storage.md §2.2 :104、§7.5 :601）。
+    ///
+    /// 有意偏离 Android：原版 1.11.5 的 `getReverseMainText()` 被改成恒返回 false
+    /// （`AppSettings.smali` 的方法体是 `const/4 v0, 0x0; return v0`，见
+    /// `Models/AppSettings.swift:29-34`），所以它其实永远写 false。iOS 侧按字段真实值写，
+    /// 好让 `AppSettings` 能完整往返；**生效值**仍应读 `effectiveReverseMainText`（恒 false），
+    /// 因此界面语义与 Android 完全一致。
+    ///
+    /// 提交方式：storage.md §2.8（:197-206）记了 `saveSettings` 用 `apply()`、
+    /// 只有 `saveCredentials` 用 `commit()`。iOS 的 `UserDefaults` 对同进程读取是立即可见的，
+    /// 不存在 apply/commit 的可见性差异，所以这里不做额外同步。
+    public func saveSettings(_ settings: AppSettings) throws {
+        writeOptionalString(TimetablePrefsKey.backgroundImageUri, settings.backgroundImageUri)
+        defaults.set(settings.periodsPerDay, forKey: TimetablePrefsKey.periodsPerDay)
+        defaults.set(settings.periodDurationMinutes, forKey: TimetablePrefsKey.periodDurationMinutes)
+        defaults.set(settings.breakDurationMinutes, forKey: TimetablePrefsKey.breakDurationMinutes)
+        defaults.set(settings.firstPeriodStartTime, forKey: TimetablePrefsKey.firstPeriodStartTime)
+        writeOptionalString(TimetablePrefsKey.firstWeekStartDate, settings.firstWeekStartDate)
+        defaults.set(settings.semesterWeeks, forKey: TimetablePrefsKey.semesterWeeks)
+        defaults.set(settings.showSaturday, forKey: TimetablePrefsKey.showSaturday)
+        defaults.set(settings.showSunday, forKey: TimetablePrefsKey.showSunday)
+        defaults.set(settings.showNonCurrentWeekCourses, forKey: TimetablePrefsKey.showNonCurrentWeekCourses)
+        defaults.set(settings.showWeekSlider, forKey: TimetablePrefsKey.showWeekSlider)
+        defaults.set(settings.reverseMainText, forKey: TimetablePrefsKey.reverseMainText)
+        defaults.set(settings.autoCheckUpdate, forKey: TimetablePrefsKey.autoCheckUpdate)
+        defaults.set(settings.autoSyncTimetableFromJwxt, forKey: TimetablePrefsKey.autoSyncTimetableFromJwxt)
+        defaults.set(settings.selectedTimetableProfileId, forKey: TimetablePrefsKey.selectedTimetableProfileId)
+        defaults.set(settings.classReminderEnabled, forKey: TimetablePrefsKey.classReminderEnabled)
+        defaults.set(settings.classReminderMode, forKey: TimetablePrefsKey.classReminderMode)
+        defaults.set(settings.classReminderMinutes, forKey: TimetablePrefsKey.classReminderMinutes)
+        defaults.set(
+            settings.nonCurrentWeekCourseAlphaPercent,
+            forKey: TimetablePrefsKey.nonCurrentWeekCourseAlphaPercent
+        )
+        defaults.set(settings.courseCardAlphaPercent, forKey: TimetablePrefsKey.courseCardAlphaPercent)
+        defaults.set(
+            settings.courseFrostedIntensityPercent,
+            forKey: TimetablePrefsKey.courseFrostedIntensityPercent
+        )
+        defaults.set(settings.courseCellHeightDp, forKey: TimetablePrefsKey.courseCellHeightDp)
+        defaults.set(settings.courseTextSizeSp, forKey: TimetablePrefsKey.courseTextSizeSp)
+        defaults.set(settings.showCourseTime, forKey: TimetablePrefsKey.showCourseTime)
+        defaults.set(settings.showCourseLocation, forKey: TimetablePrefsKey.showCourseLocation)
+        defaults.set(settings.showCourseTeacher, forKey: TimetablePrefsKey.showCourseTeacher)
+    }
+
+    // MARK: - 作息方案（storage.md §5）
+
+    /// 读 `timetable_profiles_json`。
+    ///
+    /// 三种情况都回落到**默认档案**（10 节 08:10 起，`TimetableProfile.defaultProfile`）：
+    /// 缺 key / 空串 / 全空白（storage.md §5.1 :359「默认值 / 空值行为」，读 `LocalStorage.java:193-197`）、
+    /// 以及解析出的是**空数组**（§5.1 :359、`LocalStorage.java:252-256`）。
+    /// 键存在但 JSON 非法 → `decodingFailed`（原版 `LocalStorage.java:257-260` 静默回落）。
+    public func loadProfiles() throws -> [TimetableProfile] {
+        guard let raw = jsonString(forKey: TimetablePrefsKey.profilesJson) else { return [.defaultProfile] }
+        do {
+            let items = try JSONDecoder().decode([TimetableProfileDTO].self, from: Data(raw.utf8))
+            guard !items.isEmpty else { return [.defaultProfile] }
+            return items.enumerated().map { pair in pair.element.profile(position: pair.offset) }
+        } catch {
+            throw TimetableRepositoryError.decodingFailed(
+                key: TimetablePrefsKey.profilesJson,
+                reason: describe(error)
+            )
+        }
+    }
+
+    /// 写 `timetable_profiles_json`（storage.md §5.1 的 JSON 结构，写 `LocalStorage.java:170-187`）。
+    ///
+    /// 注意：默认档案只是「每次读不到时现算」，**不会**被自动写回磁盘
+    /// （storage.md §5.3 :420）；只有调用方显式保存时才会落盘。这里保持同样语义：
+    /// `saveProfiles` 只写传进来的数组，写空数组就存 `[]`（下次读出来仍是默认档案）。
+    public func saveProfiles(_ profiles: [TimetableProfile]) throws {
+        do {
+            let data = try JSONEncoder().encode(profiles)
+            defaults.set(String(decoding: data, as: UTF8.self), forKey: TimetablePrefsKey.profilesJson)
+        } catch {
+            throw TimetableRepositoryError.writeFailed(
+                key: TimetablePrefsKey.profilesJson,
+                reason: describe(error)
+            )
+        }
+    }
+
+    // MARK: - 教务凭证（storage.md §2.1 + §4）
+
+    /// 读凭据：`username` / `jwxtUrl` 来自 UserDefaults，**`password` 来自 `SecretStore`**。
+    ///
+    /// 读取前会先做一次幂等的「明文 → 钥匙串」迁移：Android 时代写下的明文 `password`
+    /// 键（storage.md §4.2）如果还在 UserDefaults 里，会被搬进钥匙串并从 UserDefaults 删除。
+    ///
+    /// `id` 硬编码 1：§4.1（:308）与 §7.5（:602）都说它不持久化，原版读取处就是
+    /// `new UserCredentials(1, ...)`（`LocalStorage.java:59`）。
+    public func loadCredentials() throws -> UserCredentials {
+        try migrateLegacyPlaintextPasswordIfNeeded()
+        return UserCredentials(
+            id: 1,
+            username: stringValue(TimetablePrefsKey.username, fallback: ""),
+            password: try secretStore.string(for: secretKey) ?? "",
+            jwxtUrl: stringValue(TimetablePrefsKey.jwxtUrl, fallback: UserCredentials.defaultJwxtUrl)
+        )
+    }
+
+    /// 写凭据：`username` / `jwxtUrl` 进 UserDefaults，密码只进 `SecretStore`。
+    ///
+    /// 与 Android 的差异（安全要求，m03200 第七节 / `UserCredentials.swift:7-10`）：
+    /// 原版在这里把明文密码 `putString` 进 `timetable_prefs`（storage.md:321-328）；
+    /// iOS 端把密码交给钥匙串，并顺手删掉可能残留的明文键。
+    /// 空密码存成「删除钥匙串条目」而不是存空串，理由同 `writeOptionalString`。
+    ///
+    /// 原版这一处用 `commit()`（同步写盘）而不是 `apply()`（storage.md §2.8 :201）；
+    /// iOS 侧钥匙串的 `SecItemAdd` / `SecItemUpdate` 本身就是同步的，语义一致。
+    public func saveCredentials(_ credentials: UserCredentials) throws {
+        defaults.set(credentials.username, forKey: TimetablePrefsKey.username)
+        defaults.set(credentials.jwxtUrl, forKey: TimetablePrefsKey.jwxtUrl)
+        do {
+            try secretStore.set(credentials.password.isEmpty ? nil : credentials.password, for: secretKey)
+        } catch {
+            throw TimetableRepositoryError.writeFailed(key: secretKey, reason: describe(error))
+        }
+        // 明文键永远不再写；顺手清掉历史遗留（若迁移还没机会跑，这里会先丢明文再写新值）。
+        defaults.removeObject(forKey: TimetablePrefsKey.password)
+    }
+
+    /// 一次性迁移：把 Android 时代落在 `timetable_prefs` 里的明文密码搬进 `SecretStore`。
+    ///
+    /// - Returns: 是否真的发现并处理了明文键。
+    ///
+    /// 幂等：明文键被删掉后下次直接返回 false。若钥匙串里**已有**密码，则不覆盖
+    /// （避免用陈旧明文盖掉新密码），但仍然删除明文键 —— 明文留在偏好里本身就是缺陷
+    /// （storage.md §4.2 的结论 :343）。
+    ///
+    /// 顺序是「先写钥匙串，成功后才删明文」：万一钥匙串写入失败就抛
+    /// `writeFailed`，明文保留在原处等下次重试，绝不出现「两边都没有」。
+    @discardableResult
+    public func migrateLegacyPlaintextPasswordIfNeeded() throws -> Bool {
+        guard let legacy = defaults.string(forKey: TimetablePrefsKey.password) else { return false }
+        let existing = try secretStore.string(for: secretKey) ?? ""
+        if !legacy.isEmpty && existing.isEmpty {
+            do {
+                try secretStore.set(legacy, for: secretKey)
+            } catch {
+                throw TimetableRepositoryError.writeFailed(key: secretKey, reason: describe(error))
+            }
+        }
+        defaults.removeObject(forKey: TimetablePrefsKey.password)
+        return true
+    }
+
+    // MARK: - 界面开关（storage.md §2.5）
+
+    /// `ui_dark_mode` / `ui_optimize_mode`，两个都默认 false
+    /// （storage.md:177-178；`ThemeMode.java:28` / `OptimizeMode.java:28`）。
+    public func loadUIFlags() throws -> UIFlags {
+        UIFlags(
+            isDarkTheme: boolValue(TimetablePrefsKey.uiDarkMode, fallback: false),
+            isOptimizeMode: boolValue(TimetablePrefsKey.uiOptimizeMode, fallback: false)
+        )
+    }
+
+    /// 写两个 UI 开关。storage.md:177 的写侧证据是 `ThemeMode.java:51`。
+    public func saveUIFlags(_ flags: UIFlags) throws {
+        defaults.set(flags.isDarkTheme, forKey: TimetablePrefsKey.uiDarkMode)
+        defaults.set(flags.isOptimizeMode, forKey: TimetablePrefsKey.uiOptimizeMode)
+    }
+
+    // MARK: - 清空（storage.md §1.3 :75-82）
+
+    /// 对应 `LocalStorage.clearAll()`：清空 `timetable_prefs` 的全部 key，
+    /// **不动** `log_prefs`（所以 `log_enabled` 会存活，storage.md:729 第 4 条）。
+    ///
+    /// 密码还要额外从钥匙串删除：原版 `clear()` 会连明文密码一起清掉，
+    /// 只在 UserDefaults 里删键而把密码留在钥匙串就不等价了。
+    public func clearTimetableData() throws {
+        for key in TimetablePrefsKey.clearedKeys {
+            defaults.removeObject(forKey: key)
+        }
+        do {
+            try secretStore.set(nil, for: secretKey)
+        } catch {
+            throw TimetableRepositoryError.writeFailed(key: secretKey, reason: describe(error))
+        }
+    }
+
+    // MARK: - 协议之外的 key
+
+    // `TimetableRepository` 只覆盖课表/设置/档案/凭据/UI 开关/清空；
+    // 下面这些 key 在 Android 端由别的类读写（弹窗、日志、提醒），i=0 处不放进协议里，
+    // 但既然 key 都在同一个偏好库里，就一并在这里实现，键名与默认值同样逐字对齐 storage.md。
+
+    /// 免责声明是否永久不再提示（`disclaimer_dont_show`，默认 false）。
+    /// storage.md §7.3 :585（`LocalStorage.java:281-287`）。
+    public func loadDisclaimerDismissedPermanently() -> Bool {
+        boolValue(TimetablePrefsKey.disclaimerDontShow, fallback: false)
+    }
+
+    /// storage.md §2.5 :175 的写侧证据：`LocalStorage.java:286`（`apply()`）。
+    public func setDisclaimerDismissedPermanently(_ dontShow: Bool) {
+        defaults.set(dontShow, forKey: TimetablePrefsKey.disclaimerDontShow)
+    }
+
+    /// 使用引导是否永久不再提示（`usage_guide_dont_show`，默认 false）。
+    /// storage.md §7.3 :586（`LocalStorage.java:289-295`）。
+    public func loadUsageGuideDismissedPermanently() -> Bool {
+        boolValue(TimetablePrefsKey.usageGuideDontShow, fallback: false)
+    }
+
+    /// storage.md §2.5 :176 的写侧证据：`LocalStorage.java:294`（`apply()`）。
+    public func setUsageGuideDismissedPermanently(_ dontShow: Bool) {
+        defaults.set(dontShow, forKey: TimetablePrefsKey.usageGuideDontShow)
+    }
+
+    /// 日志总开关（`log_enabled`，**默认 true**）。storage.md §2.6 :184
+    /// （读 `LogManager.java:277`，写 `:282`）。注意它属于 `log_prefs`，
+    /// 因此 `clearTimetableData()` 不会重置它（storage.md:729）。
+    public func loadLogEnabled() -> Bool {
+        boolValue(TimetablePrefsKey.logEnabled, fallback: true)
+    }
+
+    /// 字符串读法同 `saveUIFlags`：`UserDefaults` 直接在进程内可见。
+    public func setLogEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: TimetablePrefsKey.logEnabled)
+    }
+
+    /// 已排程提醒的标识列表（`reminder_alarm_ids`，JSON 字符串数组，默认空串）。
+    /// storage.md §2.4 :159、§7.1 :565（写 `CourseReminderScheduler.java:140`，读 `:145-149`）。
+    ///
+    /// 有意偏离：原版解析失败时回退 `emptyList()`（storage.md §3.4 同类处理、
+    /// `CourseReminderScheduler.java:143-169`）；这里报 `decodingFailed`，
+    /// 因为静默回退会让「全量取消旧提醒」丢掉待取消的 id。
+    public func loadReminderAlarmIds() throws -> [String] {
+        guard let raw = jsonString(forKey: TimetablePrefsKey.reminderAlarmIds) else { return [] }
+        do {
+            return try JSONDecoder().decode([String].self, from: Data(raw.utf8))
+        } catch {
+            throw TimetableRepositoryError.decodingFailed(
+                key: TimetablePrefsKey.reminderAlarmIds,
+                reason: describe(error)
+            )
+        }
+    }
+
+    /// 写提醒标识列表。写空数组得到 `[]`，与 `CourseReminderScheduler.cancelAll`
+    /// 先覆写成空数组的行为一致（storage.md:169）。
+    public func saveReminderAlarmIds(_ ids: [String]) throws {
+        do {
+            let data = try JSONEncoder().encode(ids)
+            defaults.set(String(decoding: data, as: UTF8.self), forKey: TimetablePrefsKey.reminderAlarmIds)
+        } catch {
+            throw TimetableRepositoryError.writeFailed(
+                key: TimetablePrefsKey.reminderAlarmIds,
+                reason: describe(error)
+            )
+        }
+    }
+
+    // MARK: - 读键的小工具
+    //
+    // 统一用 `object(forKey:)` 判断「键到底存不存在」：`UserDefaults.bool(forKey:)` /
+    // `integer(forKey:)` 在键不存在时也会返回 false / 0，无法区分「未设置」与「显式 0」，
+    // 而 storage.md §2.2 的兜底语义恰恰依赖这个区分。
+
+    /// 库里的字符串；键不存在（或不是字符串）返回 nil。
+    private func optionalString(_ key: String) -> String? {
+        defaults.object(forKey: key) as? String
+    }
+
+    /// 库里的字符串，缺 key 用 `fallback`（对应原版 `getString(key, fallback)`）。
+    private func stringValue(_ key: String, fallback: String) -> String {
+        optionalString(key) ?? fallback
+    }
+
+    /// 库里的整数，缺 key 用 `fallback`（对应原版 `getInt(key, fallback)`）。
+    ///
+    /// 先试 `Int` 再试 `NSNumber`：Darwin 上存进去的 `Int` 取出来是 `NSNumber`，
+    /// 而 swift-corelibs-foundation 可能直接给回 `Int`，两条路都留着。
+    private func intValue(_ key: String, fallback: Int) -> Int {
+        guard let raw = defaults.object(forKey: key) else { return fallback }
+        if let value = raw as? Int { return value }
+        if let value = raw as? NSNumber { return value.intValue }
+        return fallback
+    }
+
+    /// 库里的布尔，缺 key 用 `fallback`（对应原版 `getBoolean(key, fallback)`）。
+    /// 兜底值允许是「另一个 key 的值」，`showSaturday` / `showSunday` 就是这么用的。
+    private func boolValue(_ key: String, fallback: Bool) -> Bool {
+        guard let raw = defaults.object(forKey: key) else { return fallback }
+        if let value = raw as? Bool { return value }
+        if let value = raw as? NSNumber { return value.boolValue }
+        return fallback
+    }
+
+    /// 读 JSON 容器的原始字符串，并统一「空串 = 缺失」语义。
+    ///
+    /// storage.md:727 第 2 条：`courses_json` / `timetable_profiles_json` / `reminder_alarm_ids`
+    /// 三个 key 的「不存在」与「空串」语义相同；原版用 Kotlin 的 `isBlank()`
+    /// （`LocalStorage.java:122`），所以全空白也算缺失 —— 这里用 `trimmingCharacters` 对齐。
+    private func jsonString(forKey key: String) -> String? {
+        guard let raw = defaults.string(forKey: key) else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : raw
+    }
+
+    /// 可空字符串的写侧：nil 就用 `removeObject`。
+    ///
+    /// 依据：Android 的 `Editor.putString(key, null)` 等价于 `remove(key)`，
+    /// 原版 `saveSettings` 对 `backgroundImageUri` / `firstWeekStartDate` 正是这么写的
+    /// （storage.md §2.2 :105、:110）；若在 iOS 上写成空串，会让「键存在」判断失真。
+    private func writeOptionalString(_ key: String, _ value: String?) {
+        if let value {
+            defaults.set(value, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    /// 把底层错误压成一行，便于 `TimetableStore.lastError` 展示与测试断言。
+    private func describe(_ error: Error) -> String {
+        if let localized = error as? LocalizedError, let description = localized.errorDescription {
+            return description
+        }
+        return String(describing: error)
+    }
+}
