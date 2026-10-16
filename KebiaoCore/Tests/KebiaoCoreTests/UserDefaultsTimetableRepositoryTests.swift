@@ -482,10 +482,18 @@ final class UserDefaultsTimetableRepositoryTests: XCTestCase {
         XCTAssertTrue(settings.showSaturday, "缺 showSaturday 时回退读 showWeekend")
         XCTAssertTrue(settings.showSunday, "缺 showSunday 时回退读 showWeekend")
 
-        // 1.11.5 只读不写，所以 saveSettings 不得写出这个遗留键。
-        try repository.saveSettings(settings)
-        XCTAssertNil(defaults.object(forKey: "showWeekend"), "遗留键只读，不得写出（§2.2 末尾）")
-        XCTAssertTrue(defaults.bool(forKey: "showSaturday"))
+        // 1.11.5 只读不写：`saveSettings` 是一串 `put*`（`LocalStorage.java:64`），
+        // 既没有 `putBoolean("showWeekend", …)` 也没有 `remove("showWeekend")`。
+        // 所以「保存一份两个周末开关都为 false 的设置」之后，遗留键必须还是**当初写进去的 true**
+        // （若实现顺手写了这个键，它会被保存地改成 false；若实现顺手删了它，它就是 nil）。
+        var weekendOff = settings
+        weekendOff.showSaturday = false
+        weekendOff.showSunday = false
+        try repository.saveSettings(weekendOff)
+
+        XCTAssertEqual(defaults.object(forKey: "showWeekend") as? Bool, true, "遗留键只读，saveSettings 不得动它（§2.2 末尾）")
+        XCTAssertFalse(defaults.bool(forKey: "showSaturday"), "真正的键写出去了")
+        XCTAssertFalse(defaults.bool(forKey: "showSunday"), "真正的键写出去了")
     }
 
     func testCoursesJSONIsAFlatArrayOfTwelveNamedFields() throws {

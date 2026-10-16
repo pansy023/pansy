@@ -46,15 +46,21 @@ final class TimeSlotLogicTests: XCTestCase {
     }
 
     func testGenerateTimeSlotsDoesNotWrapPastMidnight() {
-        // 原版对 hour 不取模 24（见 `TimeSlotLogic.generateTimeSlots` 的注释），
+        // 原版对 hour 不取模 24（`TimetableScreenKt.java:211-214`、`:219-222`），
         // 这里逐字保留，避免「修好」之后与原版行为不一致。
+        //
+        // 逐行推演（`:206-223`）：
+        //   i=0  起 23:50 → 50+45=95 ≥60 → hour=24, minute=35 → 存 "23:50-24:35"
+        //        课间：35+10=45，不触发进位
+        //   i=1  起 24:45 → 45+45=90 ≥60 → hour=25, minute=30 → 存 "24:45-25:30"
+        // 所以第二段的起点是「上一段结束后再加 10 分钟课间」，不是上一段的终点。
         let slots = TimeSlotLogic.generateTimeSlots(
             firstPeriodStartTime: "23:50",
             periodDurationMinutes: 45,
             breakDurationMinutes: 10,
             periodsPerDay: 2
         )
-        XCTAssertEqual(slots, ["23:50-24:35", "24:35-25:30"])
+        XCTAssertEqual(slots, ["23:50-24:35", "24:45-25:30"])
     }
 
     func testGenerateTimeSlotsFallsBackToEightOClockWhenStartTimeIsUnparseable() {
@@ -177,7 +183,10 @@ final class TimeSlotLogicTests: XCTestCase {
     }
 
     func testDefaultProfileIsNotUniformlyGenerated() {
-        // 默认方案中间有午休（12:00 → 14:10），所以**不能**由「等长节次」现算出来。
+        // 出厂内置的 10 节（`LocalStorage.java:265`）里有两处**等长推算算不出来**的间隔：
+        // - 第 2 节后有 30 分钟大课间（09:50 → 10:20），比 settings 里的课间 10 分钟多 20；
+        // - 第 4 节后是午休（12:00 → 14:10）。
+        // 所以只有前 2 节能和「等长节次」对上，从第 3 节起必分叉。
         // 这条测试把该事实钉死：生效时间必须读方案本身，不能只按 settings 推算。
         let generated = TimeSlotLogic.generateTimeSlots(
             firstPeriodStartTime: "08:10",
@@ -187,7 +196,9 @@ final class TimeSlotLogicTests: XCTestCase {
         )
         let profileSlots = TimeSlotLogic.effectiveTimeSlots(settings: .default, profiles: [.defaultProfile])
 
-        XCTAssertEqual(Array(generated.prefix(4)), Array(profileSlots.prefix(4)))
+        XCTAssertEqual(Array(generated.prefix(2)), Array(profileSlots.prefix(2)))
+        XCTAssertEqual(profileSlots[2], "10:20-11:05")
+        XCTAssertNotEqual(generated[2], profileSlots[2])
         XCTAssertEqual(profileSlots[4], "14:10-14:55")
         XCTAssertNotEqual(generated[4], profileSlots[4])
     }

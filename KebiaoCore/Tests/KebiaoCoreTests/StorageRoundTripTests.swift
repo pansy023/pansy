@@ -699,7 +699,10 @@ final class StorageRoundTripTests: XCTestCase {
         XCTAssertNil(settings.firstWeekStartDate)
         XCTAssertFalse(settings.showSaturday)
         XCTAssertFalse(settings.showSunday)
-        XCTAssertFalse(settings.showCourseTeacher)
+        // ⚠️ 三个「显示」开关的工厂默认值是 **true**
+        // （`LocalStorage.java:89` 的 `getBoolean("showCourseTime", true)` / `"showCourseLocation"` /
+        // `"showCourseTeacher"`），不是 false。
+        XCTAssertTrue(settings.showCourseTeacher)
 
         // 4) 密码走凭证仓库删除，不留孤儿。
         XCTAssertNil(credentialStore.password)

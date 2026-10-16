@@ -303,6 +303,24 @@ public enum WeekLogic {
     /// 对应 `TimetableScreenKt.java:281-299` 的 `parseDate`。
     public static func parseDate(_ value: String, calendar: Calendar = .app) -> Date? {
         guard let parsed = dateFormatter(calendar: calendar).date(from: value) else { return nil }
+
+        // ⚠️ Foundation 的 `DateFormatter` 比 Java 的 `SimpleDateFormat` 宽松：
+        // 分隔符对不上也会解析成功（`"2026/09/01"` 会被当成 `2026-09-01`），
+        // 越界字段的处理也不同。Java 侧是
+        // `SimpleDateFormat("yyyy-MM-dd").setLenient(false)`（`TimetableScreenKt.java:281-285`）：
+        // 分隔符要逐字匹配、字段要落在合法区间，任一条不满足就抛 `ParseException`，
+        // 被 `:296-298` 的 catch 吞成 `null` → `getCurrentTeachingWeek` 返回第 1 周。
+        // 这里把解析结果反查一遍：文本按 `-` 切出的三个数字必须与解析出的年月日逐项相等，
+        // 任一项对不上就按「解析失败」处理（等价于 Java 的 catch 分支）。
+        // 注意**不**要求补零（`"2026-9-1"` 照样通过），因为 Java 的 `MM`/`dd` 也接受 1 位数字。
+        let numbers = value.components(separatedBy: "-").compactMap { Int($0) }
+        let components = calendar.dateComponents([.year, .month, .day], from: parsed)
+        guard numbers.count == 3,
+              numbers[0] == components.year,
+              numbers[1] == components.month,
+              numbers[2] == components.day
+        else { return nil }
+
         return calendar.startOfDay(for: parsed)
     }
 }
