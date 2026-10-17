@@ -730,13 +730,27 @@ final class UserDefaultsTimetableRepositoryTests: XCTestCase {
         // 只管「写」失败是不够的：读失败也必须是可观察的错误，
         // 否则 App 会以为用户从没设过密码（静默吞掉）。
         //
-        // 这里刻意**不**限定错误的具体类型：`saveCredentials` 会把底层错误收进
-        // `writeFailed(key:reason:)`，而读路径是把钥匙串错误原样上抛
-        //（`Storage/UserDefaultsTimetableRepository.swift:665` 的
-        // `try credentialStore.loadPassword()`），两者都不算「吞掉」。
+        // ⚠️ 这条守的**意图**没变，变的是暴露通道。修 #5 时读路径收窄过一次：
+        // 早先把钥匙串错误原样上抛，`TimetableStore` 兜底时整体回落成空
+        // `UserCredentials`，于是**已经落盘的 username / jwxtUrl 一起被丢掉**
+        //（界面表现：重启后用户名输入框变空，由 XCUITest
+        //  `SettingsControlsUITests:216` 独立抓到，不是这里推测出来的）。
+        // 现在改成：账号字段照常返回、密码置空，失败原因走 `credentialLoadWarning`
+        // 显式暴露（`TimetableStore` 会把它并进 `lastError`）。
+        //
+        // 所以「不得被静默吞掉」仍然成立 —— 读失败依旧是可观察的，
+        // 只是从「抛错」换成了「credentialLoadWarning 非空」；
         // 用 `TimetableStore` 兜底时的表现（回落默认值 + 记 `lastError`）另有其测试。
+        defaults.set("u-on-read-failure", forKey: "username")
         vault.failure = RecordingCredentialVault.InjectedFailure()
-        XCTAssertThrowsError(try repository.loadCredentials(), "钥匙串读失败不得被静默吞成空密码")
+
+        let credentials = try repository.loadCredentials()
+        XCTAssertEqual(credentials.username, "u-on-read-failure", "读失败不得牵连已落盘的账号")
+        XCTAssertEqual(credentials.password, "", "读失败时密码只能是空串")
+        XCTAssertNotNil(
+            repository.credentialLoadWarning,
+            "钥匙串读失败必须留下可观察的信号，不得被静默吞成空密码"
+        )
     }
 
     // MARK: - 7. clearTimetableData 只清课表数据

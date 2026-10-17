@@ -161,7 +161,10 @@ jobs:
           REST="${INFO#*|}"
           SIM_NAME="${REST%%|*}"
           SIM_RUNTIME="${REST#*|}"
-          echo "选中的模拟器：$SIM_NAME（runtime=$SIM_RUNTIME，UDID=$UDID）"
+          # ⚠️ 变量一律用 ${} 包起来、后面跟空格再接中文：
+          # 直接写 `$SIM_NAME（` 时，非 UTF-8 locale 的 bash 会把全角括号的首字节
+          # 当成变量名的一部分，报 "SIM_NAME?: unbound variable" 直接挂掉（已踩过）。
+          echo "选中的模拟器：${SIM_NAME} runtime=${SIM_RUNTIME} UDID=${UDID}"
           xcrun simctl list devices available > simctl-devices.txt
           cat simctl-devices.txt
           {
