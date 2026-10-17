@@ -57,6 +57,9 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: YES
         GENERATE_INFOPLIST_FILE: NO
+        # 应用图标：apps/Kebiao/Assets.xcassets/AppIcon.appiconset
+        # （图形取自安卓端 mipmap/ic_launcher，不重绘，仅等比缩放到 iOS 各档）
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: apps/Kebiao/Info.plist
       properties:
