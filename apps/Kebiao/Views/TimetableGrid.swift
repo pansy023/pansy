@@ -102,6 +102,27 @@ struct TimetableGrid: View {
             }
             .background(gridFrameReporter)
         }
+        // ⚠️ 必须显式给网格一个**内容高度**：`GeometryReader` 放进 `ScrollView` 时
+        // 只会吃下「滚动视口」的高度，它内部这块 VStack 的真实高度撑不出来，
+        // 于是 `ScrollView` 以为内容只有一屏高 —— 表现就是「往下拉只到第 9 节、
+        // 再拉就回弹」，最后一节永远看不到。这里按面板几何把它算准。
+        .frame(height: intrinsicHeight)
+    }
+
+    /// 网格的真实内容高度：表头 + 面板前的间隔 + 每个面板的高度 + 末尾间隔。
+    ///
+    /// 与 `body` 里 `VStack(spacing: 0)` 的子视图逐项一致：
+    /// `Theme.headerHeight` + `(blockRanges.count + 1) × Theme.blockGap`
+    /// + `Σ cellHeight × blockRows`，其中 `blockRows = max(end - start + 1, 1)`
+    /// （与 `periodBlock` 里的 `blockRows` 同源）。
+    private var intrinsicHeight: CGFloat {
+        let blocksHeight = blockRanges.reduce(CGFloat(0)) { partial, block in
+            let rows = max(block.upperBound - block.lowerBound + 1, 1)
+            return partial + cellHeight * CGFloat(rows)
+        }
+        return Theme.headerHeight
+            + CGFloat(blockRanges.count + 1) * Theme.blockGap
+            + blocksHeight
     }
 
     /// 把整个网格的矩形（含表头与全部面板）报给浮层。
@@ -129,15 +150,12 @@ struct TimetableGrid: View {
             headerCells(leftWidth: leftWidth, dayWidth: dayWidth)
         }
         .frame(height: Theme.headerHeight)
-        // 表头只圆上面两角（面板各自圆角，表头单独贴在最上方）。
+        // ⚠️ 表头这块「周几」小卡片要和下面三个面板一样**四角都圆**。
+        // 早先只圆上面两角、下面留直角，用户明确指出「上边圆弧、下边突然直角」很突兀。
+        // 表头与第一个面板之间本来就有 `Theme.blockGap` 的间隔，所以四角圆起来
+        // 就是一块独立的小卡，不会和面板粘在一起。
         .clipShape(
-            UnevenRoundedRectangle(
-                topLeadingRadius: Theme.panelRadius,
-                bottomLeadingRadius: 0,
-                bottomTrailingRadius: 0,
-                topTrailingRadius: Theme.panelRadius,
-                style: .continuous
-            )
+            RoundedRectangle(cornerRadius: Theme.panelRadius, style: .continuous)
         )
     }
 

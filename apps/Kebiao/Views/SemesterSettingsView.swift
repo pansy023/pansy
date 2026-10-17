@@ -141,7 +141,8 @@ struct SemesterSettingsView: View {
                 }
             }
         } header: {
-            Text("基础信息")
+            // 组名对齐原版 `SettingsScreenKt.java:1489` 的 `SectionTitle("学期与时间")`。
+            Text("学期与时间")
         } footer: {
             Text(
                 "「第一节开始时间」「每节时长」「课间时长」「一天课程节数」只有当前时间表"
