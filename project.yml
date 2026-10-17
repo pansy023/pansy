@@ -81,8 +81,23 @@ targets:
         UIBackgroundModes:
           - fetch
         ITSAppUsesNonExemptEncryption: false
-        # 阶段④：教务地址若走 http 明文，需要按实测地址补 ATS 例外。
-        # iOS 默认禁止明文 HTTP，这里**不预先放开**（见 docs/recon/02-jwxt-login-and-parser.md）。
+        # 阶段④ ATS 例外：2026-10-17 真机实测后补上（见 docs/recon/02-jwxt-login-and-parser.md）。
+        #
+        # 真机证据：教务登录后报 NSURLErrorDomain Code=-1022
+        # 「The resource could not be loaded because the App Transport Security policy requires the
+        #   use of a secure connection.」，失败 URL = http://jwgl.xihang.com.cn/jsxsd/framework/xsrkxz.htmlx
+        # ⇒ 服务器把跳转指回了 http 明文地址，iOS 的 ATS 直接拒载。
+        # 会话层第一跳已经是 https（`JwxtSession.secureURLString` 的强制提升），但**重定向跟随是照搬
+        # Android 逻辑**（拿到 `Location` 就跳）；Android 的 jsoup 没有 ATS，所以安卓端能过、iOS 被拦。
+        #
+        # 因此按**实测地址**做**域名级**例外：只放开该教务域名（含子域）的明文 HTTP，
+        # 其余域名仍保持 iOS 默认的「禁止明文」。
+        # ⚠️ 若以后把设置页里的教务地址换成别的域名，需要在这里再加一条。
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            jwgl.xihang.com.cn:
+              NSExceptionAllowsInsecureHTTPLoads: true
+              NSIncludesSubdomains: true
 
   # ── App 层单元测试（XCTest，宿主 = Kebiao.app）────────────────
   #
