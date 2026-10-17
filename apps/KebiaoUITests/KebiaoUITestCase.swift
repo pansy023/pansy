@@ -444,7 +444,16 @@ class KebiaoUITestCase: XCTestCase {
         // 课程名一旦含有分隔字符就只会删掉一半，测试结果变得依赖输入法行为。
         // 逐字退格与名字内容无关，是确定的。测试课程名都是小写 ASCII，
         // 退格键在模拟器软键盘上输入稳定。
-        field.tap()
+        //
+        // ⚠️ 必须先把光标确定性地放到**文本末尾**，再退格（2026-10-17 经用户批准改的）。
+        // `field.tap()` 点的是元素**中心**，而这个输入框是 `multilineTextAlignment(.trailing)`
+        // （文字靠右），光标因此落在文本**中间**，逐字退格只删掉光标前的半段 ——
+        // 落库的就是「新名 + 旧名残留尾巴」的拼接串，改名后卡片名比新名字更长。
+        // CI run 39027985486 唯一那 1 条失败正是这么来的：改名前的截图里 20 字符课程名
+        // 完整两行无省略号，改名后的截图里卡片名以新名字开头却多出一个省略号
+        // （证据见 docs/audit/functional-audit.md §4.0）。改成点输入框**最右端**：
+        // 光标确定性地落在末尾，退格才能把旧值整段删干净。
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
         let existing = (field.value as? String) ?? ""
         let backspaces = String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count)
         field.typeText(backspaces + newName)

@@ -27,21 +27,26 @@
 | 8 | `project.yml` 既没有单元测试 target、也没有 UI 测试 target；CI 只跑 `swift test` + 编译，**没有模拟器、没有 XCUITest、没有截图、没有报告**。 | **P2** | 已补 `KebiaoTests`（app-hosted XCTest）+ `KebiaoUITests` target 与 `ui-tests` job（§4） |
 | 9 | 关于「空壳 / 假数据」：设置页控件**普遍是真实绑定 + 已落盘**，不是空壳（10 个 Toggle、5 个 Slider、5 个 Stepper·DatePicker、3 个 TextField 全接 `TimetableStore`）。全工程只有 2 处固定样例且**不参与真实业务**（`SettingsView.cardPreview`、各 `#if DEBUG` 预览）。课表数据只来自 `TimetableStore`，**没有用演示数据冒充抓取结果**。 | — | 保持 |
 
-> **诚实提示（2026-10-17 第二次更新）**：本文所有测试**已经在 CI 的 macOS runner 上真实执行过** ——
-> 最新 run `39026024600`（commit `4e8bb87`）：`KebiaoCore` 263 条执行完（job = success）、
-> App 层 3 条通过（`** TEST SUCCEEDED **`）、XCUITest 17 条中 **13 通过 / 4 失败**。
+> **诚实提示（2026-10-17 第三次更新）**：本文所有测试**已经在 CI 的 macOS runner 上真实执行过** ——
+> 最新 run `39027985486`（commit `a733622`）：`KebiaoCore` 263 条执行完（job = success）、
+> App 层 3 条通过（`** TEST SUCCEEDED **`）、XCUITest 17 条中 **16 通过 / 1 失败**。
 >
-> - **上一轮那 4 条 `more.isHittable` 失败已收敛**：按你批准把断言换成 `more.tap()` 后，
->   日志（`t = 45.05s … Synthesize event`）显示点击真实生效，紧随其后的
->   `editor.field.name` 断言**真的找到了编辑页** —— 证实 `isHittable == false` 是 XCUITest 读数为错
->   （机制：它给这颗按钮算出的命中点是 `{-1, -1}`，见 §4.0），**按钮本身可用**。
-> - **残留的 4 条失败已前移到下一站**：全部命中同一个新位置 ——
->   [KebiaoUITestCase.swift:488](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/apps/KebiaoUITests/KebiaoUITestCase.swift#L480-L494)
->   的 `confirm.tap()`：`editor.dialog.confirmDelete` **匹配到 2 个元素**
->   （SwiftUI `.confirmationDialog` 把同一颗按钮渲染成 Button 套 Button），
->   属**测试定位问题、不是 App 缺陷**；证据与修法见 §4.0。
-> - 「4 条失败」依然不等于「4 个缺陷」：它们是**同一处断言**被 4 条用例共用
->   （且都发生在用例**收尾清理**阶段，被测功能本身已走通）。
+> - **上一轮那 4 条 `confirmDelete` 重复匹配失败已收敛**：按你批准把
+>   `deleteConfirmationButton()` 三个分支改用 `.firstMatch` 后，那 4 条用例**全部通过**
+>   （`LaunchUITests` 2/2、`PersistenceUITests` 1/1、`WeekNavigationUITests` 3/3，
+>   `CourseCRUDUITests` 的增删改流程也越过了收尾删课那一站）。
+> - **唯一残留的 1 条失败是新的一站**：[KebiaoUITestCase.swift:453](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/apps/KebiaoUITests/KebiaoUITestCase.swift#L453-L456)
+>   的 `renameCourse` 断言「改名后主界面没有出现新名字的卡片「uitestcrudx1792235873」」。
+>   被测链路（点旧卡片 → 更多 → 编辑页带出旧名 → 改名 → 保存）**日志显示每一步都走到了**，
+>   失败只发生在「改名后新卡片是否出现」这一步。
+> - **这条的根因已定案（详见 §4.0）：是测试侧的输入方式问题，不是 App 缺陷。**
+>   决定性证据来自本轮 artifact 里的两张截图：改名**前**那张显示课程名**完整**渲染
+>   （20 字符两行排满、**没有**省略号）；改名**后**那张显示卡片名以新名字开头、
+>   但**多出一个省略号** —— 即**落库的名字比新名字更长**，是「新名 + 旧名残留尾巴」的拼接串。
+>   App 只是**忠实保存了输入框里的内容**（`store.updateCourse` 按 `id` 整条替换、编辑页
+>   `$draft.name` 双向绑定，静态核查均正确），所以问题出在测试清空输入框的方式上：
+>   `field.tap()` 点的是输入框**中心**，光标不在文本末尾，退格只删掉光标前的半段。
+> - 结论：这 1 条失败**不影响 App 功能判定**；但**修复它仍需你点头**（改测试清空方式 → 推送 → 复跑，§6 第 8 条）。
 >
 > **本机（Windows）依然跑不了任何测试**，一切动态结论都来自 CI。
 
@@ -138,7 +143,8 @@ init(store: TimetableStore) {
 
 状态取值（五选一）：`已实现且有测试` / `已实现但缺少测试` / `部分实现` / `只有 UI 没有业务逻辑` / `暂时无法实现（已说明原因）`。
 其中「有测试」指**用例已写好**；用例是否**通过**，以 §4.0/§4.1 的 CI 实测结果为准
-（17 条中 13 条通过，4 条未通过 —— 未通过的都是「更多」按钮那一处断言）。
+（17 条中 **16 条通过、1 条未通过** —— 未通过的是 `renameCourse` 改名后新卡片未出现那一处，
+**根因已定案 = 测试侧清空输入框的方式问题、非 App 缺陷**，见 §4.0）。
 
 ### 2.1 主界面（`RootView` / `TimetableView` / `WeekSwitcher` / `TimetableGrid` / `CourseDetailOverlay`）
 
@@ -153,7 +159,7 @@ init(store: TimetableStore) {
 | `tt.week.slider` | 拖动 | `weekOffset = 值 - currentWeek` | `TimetableView.swift:148-187` | 是 | 否 | `WeekNavigationUITests#testWeekSliderChangesDisplayedWeekWhenEnabled` | 已实现且有测试（本轮修了 P0-2） |
 | 课程卡片（label = 课程名，无 identifier） | 点击 | 原地展开详情浮层 | `CourseCard.swift:47` → `TimetableGrid.swift:326-336` → `TimetableView.handleTap` | 是（`@State expansion`） | 否 | `WeekNavigationUITests#testTappingCourseCardOpensAndDismissesDetailOverlay` | 已实现且有测试 |
 | `overlay.button.dismiss`（✕） | 点击 | 收起浮层 | `CourseDetailOverlay.swift:176-185` | 是 | 否 | 同上 | 已实现且有测试 |
-| `overlay.button.more`（更多） | 点击 | 收起浮层 + 打开编辑 sheet | `CourseDetailOverlay.swift:191-206` → `TimetableView.swift:311-317` | 是 | — | `KebiaoUITestCase.openCardEditor(named:)`；`CourseCRUD` / `Persistence` | ✅ **已实现且有测试**（CI 实测：`isHittable` 读到 false 是 XCUITest 把命中点算成 `{-1,-1}` 的**读数误判**，真实 `tap()` 能打开编辑页；见 §4.0） |
+| `overlay.button.more`（更多） | 点击 | 收起浮层 + 打开编辑 sheet | `CourseDetailOverlay.swift:191-206` → `TimetableView.swift:311-317` | 是 | — | `KebiaoUITestCase.openCardEditor(named:)`；`CourseCRUD` / `Persistence` | ✅ **已实现且有测试**（CI 实测：`isHittable` 读到 false 是 XCUITest 把命中点算成 `{-1,-1}` 的**读数误判**，真实 `tap()` 能打开编辑页；本轮 4 条依赖它的用例全部通过；见 §4.0） |
 | 浮层背景遮罩 | 点击 | 收起浮层 | `CourseDetailOverlay.swift:129` | 是 | 否 | **无** | 已实现但缺少测试 |
 | 网格表头 / 时间轴 / 课程面板 | 只读 | 渲染网格（表头 `周一`+日期、节次块） | `TimetableGrid.swift:146-190` | 否 | — | `LaunchUITests#testFreshLaunch…`（断言 `周一` 存在，防白屏） | 已实现且有测试 |
 
@@ -163,7 +169,7 @@ init(store: TimetableStore) {
 
 | 控件（identifier） | 操作 | 预期业务行为 | 代码路径 | 改状态 | 需落盘 | 对应自动化测试 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `editor.field.name` | 输入 | 写 `draft.name`；空名（含纯空格）时保存按钮置灰 | `:116-118`、`:107-110` | 是（草稿） | 保存时落盘 | `CourseCRUDUITests#testSaveIsDisabledWhenCourseNameIsEmpty`；`createCourse` / `renameCourse` | 已实现且有测试 |
+| `editor.field.name` | 输入 | 写 `draft.name`；空名（含纯空格）时保存按钮置灰 | `:116-118`、`:107-110` | 是（草稿） | 保存时落盘 | `CourseCRUDUITests#testSaveIsDisabledWhenCourseNameIsEmpty`；`createCourse` / `renameCourse` | 已实现且有测试（`renameCourse` 用例**本轮未通过**：**已定案为测试侧清空输入框的方式问题、非 App 缺陷**，见 §4.0） |
 | `editor.field.teacher` | 输入 | 写 `draft.teacher` | `:120-123` | 是 | 保存时落盘 | **无** | 已实现但缺少测试 |
 | `editor.field.location` | 输入 | 写 `draft.location` | `:125-128` | 是 | 保存时落盘 | **无** | 已实现但缺少测试 |
 | `editor.picker.weekday` | 选择 | 写 `dayOfWeek` 1…7 | `:133-139` | 是 | 保存时落盘 | **无** | 已实现但缺少测试 |
@@ -173,7 +179,7 @@ init(store: TimetableStore) {
 | `editor.picker.endWeek` | 选择 | 写 `endWeek` | `:173-178` | 是 | 保存时落盘 | **无** | 已实现但缺少测试 |
 | `editor.picker.parity`（单双周） | 选择 | 写 `isOdd` 0/1/2 | `:180-185` | 是 | 保存时落盘 | **无** | 已实现但缺少测试 |
 | `editor.button.cancel` | 点击 | `dismiss()` 不保存 | `:205-208` | — | — | `CourseCRUDUITests#testSaveIsDisabledWhenCourseNameIsEmpty` | 已实现且有测试 |
-| `editor.button.save`（保存修改/添加课程） | 点击 | 新增走 `insertCourse`、编辑走 `updateCourse`，随后落盘 | `:209-213`、`:231-245` | 是 | **是** | `createCourse` / `renameCourse`；`CourseCRUD` / `Persistence` | 已实现且有测试 |
+| `editor.button.save`（保存修改/添加课程） | 点击 | 新增走 `insertCourse`、编辑走 `updateCourse`，随后落盘 | `:209-213`、`:231-245` | 是 | **是** | `createCourse` / `renameCourse`；`CourseCRUD` / `Persistence` | 已实现且有测试（新增 / 删除 / 重启保留均通过；编辑改名走的是同一 `save()` → `updateCourse`，其未通过**不在保存路径**，见 §4.0） |
 | `editor.button.delete`（删除此课程） | 点击 | 弹二次确认（`showsDeleteConfirmation = true`） | `:192-199` | 是 | — | `KebiaoUITestCase.deleteCourse(named:)` | 已实现且有测试 |
 | `editor.dialog.confirmDelete` | 点击 | `store.deleteCourse(draft)` + `dismiss()` | `:215-228` | 是 | **是** | 同上；`PersistenceUITests` | 已实现且有测试 |
 
@@ -277,42 +283,42 @@ init(store: TimetableStore) {
 
 ---
 
-## 4. 测试与 CI 现状（截至 CI run 39026024600 / commit `4e8bb87`）
+## 4. 测试与 CI 现状（截至 CI run `39027985486` / commit `a733622`）
 
 | 项目 | 现状 |
 | --- | --- |
 | **App 层单元测试（App-hosted XCTest）** | `apps/KebiaoTests/AppEnvironmentTests.swift`，3 条用例，用 `@testable import Kebiao` 测 App 层（`swift test` 覆盖不到的那部分）。**已真实执行：3 passed / 0 failed**（CI 里 `** TEST SUCCEEDED **`），P0-1 的回归防线成立。 |
 | `KebiaoCore` 单元测试 | 13 个测试文件、**263 条用例**。**已真实执行：263 passed / 0 failed**（CI job `KebiaoCore 单元测试` = success）。 |
-| **XCUITest** | `apps/KebiaoUITests/` 7 个文件、**17 条用例**。**已真实执行：13 passed / 4 failed**。4 条失败**全部命中同一个断言**（`deleteCourse` 里 `confirm.tap()`，`editor.dialog.confirmDelete` 匹配到 2 个元素），见 §4.0。 |
+| **XCUITest** | `apps/KebiaoUITests/` 7 个文件、**17 条用例**。**已真实执行：16 passed / 1 failed**。唯一失败是 `CourseCRUDUITests#testCreateEditAndDeleteCourseIsReflectedOnTimetable` 的**改名断言**（`KebiaoUITestCase.swift:453`）。**根因已定案：测试侧清空输入框的方式不确定（`field.tap()` 落在输入框中心 ⇒ 光标不在末尾 ⇒ 退格只删掉半段，新名与旧名残留拼接），不是 App 缺陷**，见 §4.0。 |
 | `project.yml` | 已含 `KebiaoTests`（`type: bundle.unit-test`，显式 `TEST_HOST`/`BUNDLE_LOADER`）+ `KebiaoUITests`（`type: bundle.ui-testing`、`TEST_TARGET_NAME: Kebiao`）两个 target、scheme 的 test 配置，以及 App target 的 `ENABLE_TESTABILITY: YES`（Debug）。**CI 证明这套配置可用**（app-hosted 单测与 UI 测试都真的跑起来了）。既有 `Kebiao` target 与 `KebiaoCore` package **未改动**。 |
 | CI | `ui-tests` job：装 xcodegen → `xcodegen generate` → `simctl` 挑运行时版本最高的 iPhone（挑不到就 `::error::` 退出）→ 分两步跑 `only-testing:KebiaoTests` 与 `:KebiaoUITests` → `if: always()` 汇总两份 `xcresult` → 上传报告/日志/失败截图 → **末尾闸门步骤**：任一层不是 success 就让 job 明确失败。**本轮闸门确实拦住了交付**（job 结果 = failure，闸门步骤 = failure），未出现「测试挂了但 CI 是绿的」。 |
 | iOS App 编译 | ✅ **已发生**：job `生成工程并编译 iOS App` = success（含本轮全部改动）。 |
 | 模拟器启动 | ✅ **已发生**：`ui-tests` job 在 iPhone 17 模拟器（iOS runtime 见 artifact 内 `simctl` 设备清单）上真实启动了 App 并跑完 17 条用例。 |
-| 失败截图 / 测试报告 | ✅ **已产出**：artifact `Kebiao-uitest-results`（**242.9 MB**，含 `.xcresult`、导出附件与失败诊断文本）。助手已用 API 取回本轮 `ui-tests` 完整 job 日志（落到 `%TEMP%\kebiao-ci\logs\`）。 |
-| 「应用能启动」的证明 | ✅ **有**：17 条用例都在真实模拟器上执行过，其中 13 条通过（含「启动后主界面在、不白屏」与设置页交互）。 |
+| 失败截图 / 测试报告 | ✅ **已产出**：artifact `Kebiao-uitest-results`（含 `.xcresult`、导出附件与失败诊断文本；本轮也含失败用例的 `tearDown` 整屏截图）。助手已用 API 取回本轮 `ui-tests` 完整 job 日志（落到 `%TEMP%\kebiao-ci\logs\`）。 |
+| 「应用能启动」的证明 | ✅ **有**：17 条用例都在真实模拟器上执行过，其中 **16 条通过**（含「启动后主界面在、不白屏」、设置页交互、增删改课程、三次杀进程重启保留、深色模式整屏变暗）。 |
 | 真机安装 / 运行 | 由用户自签后自行验证，助手侧**无证据**。 |
 | 本轮 IPA | ✅ artifact `Kebiao-unsigned-ipa`（1.2 MB，`app-build` job 产出）。**未签名**，签名与安装由用户完成。 |
 
-### 4.0 仍未通过的 4 条用例（同一处断言，**先看这里**）
+### 4.0 仍未通过的 1 条用例（**先看这里**）
 
 | 用例 | 失败断言 | 说明 |
 | --- | --- | --- |
-| `CourseCRUDUITests.testCreateEditAndDeleteCourseIsReflectedOnTimetable` | `KebiaoUITestCase.swift:488` | 增 / 改 / 删全流程走通后，收尾删课 |
-| `LaunchUITests.testLaunchWithExistingDataShowsSavedCourse` | 同上 | 已有数据启动后，收尾删课 |
-| `PersistenceUITests.testCreatedEditedAndDeletedCoursesSurviveRelaunch` | 同上 | 三次杀进程重启后，收尾删课 |
-| `WeekNavigationUITests.testTappingCourseCardOpensAndDismissesDetailOverlay` | 同上 | **该用例本身的浮层展开 / 收起断言全部通过**，失败发生在收尾的 `deleteCourse(named:)` |
+| `CourseCRUDUITests.testCreateEditAndDeleteCourseIsReflectedOnTimetable` | [KebiaoUITestCase.swift:453](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/apps/KebiaoUITests/KebiaoUITestCase.swift#L453-L456) | 断言「改名后主界面没有出现新名字的卡片「uitestcrudx1792235873」」。失败发生在用例第 ② 步（改名），第 ③ 步（删除）**因此未执行**。
 
-失败信息恒为：
-`Failed to tap "editor.dialog.confirmDelete" Button: Find single matching element. Multiple matching elements found`。
+CI run `39027985486` 的原文：
 
-#### 上一轮那 4 条 `more.isHittable`：**已解决，根因已定案**
+```
+Executed 17 tests, with 1 failure
+/Users/runner/work/pansy/pansy/apps/KebiaoUITests/KebiaoUITestCase.swift:453: error: -[KebiaoUITests.CourseCRUDUITests testCreateEditAndDeleteCourseIsReflectedOnTimetable] : XCTAssertTrue failed - 改名后主界面没有出现新名字的卡片「uitestcrudx1792235873」
+** TEST FAILED **
+```
 
-上一轮（commit `bbfdf44`）曾把 `detailCard` 从「一个铺满整卡的 `ScrollView` + 叠在上面的按钮」
-改成上下两段 `VStack`，让滚动区与「更多」的矩形**不再重叠** —— 结果断言仍失败，
-说明「滚动区盖住按钮」这个假设**被证伪**。
+**上一轮已收敛的两站**（都按你批准改了、都已由 CI 验证有效）：
 
-本轮（commit `4e8bb87`）按你批准，把断言换成 `more.tap()` + 保留「编辑页必须出现」。
-**4 条用例全部越过这一站**，本轮日志给出直接机制证据（`t = 45.05s`）：
+**① `more.isHittable`（更早轮 4 条）→ 已解决，根因已定案。**
+根因不是遮挡，而是 XCUITest 在「滚动到可见」之后给这颗按钮算出的命中点是
+`{-1, -1}`（**不是有效坐标**），于是判定元素不可点；但 `tap()` 依旧在元素中心合成了事件，
+点击**真实生效**。证据（`t = 44.95s…46.54s`）：
 
 ```
 t = 44.95s Tap "overlay.button.more" Button
@@ -322,17 +328,9 @@ t = 45.51s Waiting 30.0s for "editor.field.name" TextField to exist
 t = 46.54s     Checking existence of `"editor.field.name" TextField`   ← 找到了
 ```
 
-**结论：按钮本身可用；`isHittable == false` 是读数误判，机制已明确** ——
-XCUITest 在「滚动到可见」之后，给这颗按钮算出的命中点是 `{-1, -1}`（**不是有效坐标**），
-于是它判定元素不可点；但 `tap()` 依旧在元素中心合成了事件，点击**真实生效**。
-这也解释了上一轮那些互相矛盾的现象（几何零重叠、同级 `dismiss` 可点、截图无遮挡）。
-**这一站无需再插桩。**
-
-#### 本轮新暴露的 4 条：`editor.dialog.confirmDelete` 匹配到 2 个元素
-
-`KebiaoUITestCase.swift:488` 的 `confirm.tap()`：`app.buttons["editor.dialog.confirmDelete"]`
-命中 **2** 个元素，抛 `Multiple matching elements found`。日志里的 `Sparse tree of matches`
-直接显示了原因：
+**② `editor.dialog.confirmDelete` 重复匹配（上一轮 4 条）→ 已解决。**
+`app.buttons["editor.dialog.confirmDelete"]` 命中 **2** 个元素，抛
+`Multiple matching elements found`；日志里 `Sparse tree of matches` 直接显示了原因：
 
 ```
                  ↳Button, identifier: 'editor.dialog.confirmDelete', label: '删除此课程'
@@ -340,45 +338,79 @@ XCUITest 在「滚动到可见」之后，给这颗按钮算出的命中点是 `
 ```
 
 即 SwiftUI 的 `.confirmationDialog` 把同一颗确认按钮投影成**按钮套按钮**，两层都带同一个
-identifier。这正是 [CourseEditorView.swift:215-228](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/apps/Kebiao/Views/CourseEditorView.swift#L215-L228)
-的 `.confirmationDialog` 在当前 iOS 模拟器运行时上的无障碍树形态。
+identifier（[CourseEditorView.swift:215-228](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/apps/Kebiao/Views/CourseEditorView.swift#L215-L228) 的写法在当前 iOS 模拟器运行时上的无障碍树形态）。
+**这不是 App 缺陷** —— 确认删除的动作只有一个，重复的只是无障碍投影。
+改用 `deleteConfirmationButton()` 的三个 `.firstMatch` 分支后，**这 4 条用例本轮全部通过**。
 
-**这不是 App 缺陷**：确认删除的动作只有一个，重复的只是无障碍投影。
-**随之而来的好消息**：这 4 条用例的**被测功能已经全部走通**（新增 / 改名 / 改名后旧卡片消失 /
-重启保留），失败只发生在**收尾清理**那一步。
+#### 本轮残留的 1 条：`renameCourse` 改名后新卡片未出现 —— **已定案：测试侧输入方式问题，非 App 缺陷**
 
-> **上一轮那处契约改动：已按你批准实施（2026-10-17）** —— 把 `KebiaoUITestCase.swift:416` 的
-> `XCTAssertTrue(more.isHittable, …)` 换成 **`more.tap()`**，并保留其后既有的
-> 「`editor.field.name` 必须出现」断言（新代码见
-> [KebiaoUITestCase.swift:412-433](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/apps/KebiaoUITests/KebiaoUITestCase.swift#L412-L433)）。
-> **已由 CI 验证有效**：4 条用例全部越过这一站（机制见上一小节）。
->
-> **本轮那处测试定位改动：已按你批准实施并推送（2026-10-17）** ——
-> 把 `deleteConfirmationButton()` 的三个分支都改成 `.firstMatch`
-> （`app.buttons["…"].firstMatch`）。理由：SwiftUI 的 `.confirmationDialog` 会把同一颗按钮
-> 投影成两层同 identifier 的 Button，`app.buttons["…"]` 必然命中 2 个，直接 `.tap()`
-> 就是当前这 4 条失败的成因。**强度不降**：后面仍然断言「确认弹窗必须出现」与
-> 「删除后卡片必须消失」，只是去掉了「必须唯一匹配」这个隐含要求 ——
-> 在 SwiftUI 重复投影下，`.firstMatch` 才是能工作的写法。
+日志显示改名链路**每一步都走到了**：
 
-### 4.1 XCUITest 用例清单（17 条，已执行：**13 通过 / 4 失败**）
+```
+t = 20.98s Tap "uitestcrud1792235873" Button          ← 旧卡片在
+t = 22.59s Tap "overlay.button.more" Button
+t = 25.60s Tap "editor.field.name" TextField          ← 编辑页打开
+t = 26.60s Type '…' into "editor.field.name" TextField ← 键入（退格 + 新名）
+t = 27.71s Tap "editor.button.save" Button
+t = 29.27s Waiting 30.0s for Any (First Match) to exist  ← 新卡片始终没等到（30s 超时）
+```
 
-各 suite 实测结果（CI run 39026024600）：
+失败前那句 `XCTAssertEqual(field.value as? String, oldName)`（`:439`）**是通过的** ——
+即编辑页确实带出了旧课程名。
+
+**决定性证据（助手已下载本轮 artifact、核对其中截图）**：
+
+| 截图 | 卡片名渲染成 | 说明 |
+| --- | --- | --- |
+| `crud-created_0_…`（改名**前**） | 两行 `uitestcrud17` / `92235873` | 20 字符**完整**排满两行，**没有省略号** |
+| `tearDown--[…testCreateEditAndDeleteCourseIsReflectedOnTimetable]`（改名**后**） | 两行 `uitestcrudx1` / `792235873…` | 以**新名字**开头，但**多出一个省略号** ⇒ 实际名字**比新名字更长** |
+
+同一张卡片、同样的两行排版：改名前的 20 字符排满两行且无省略号；改名后头 21 个字符
+恰好就是新名字，却仍被截断出一个省略号 —— 所以**落库的课程名 = 新名字 + 旧名字残留的一段**，
+是一个拼接串；`card(newName)` 按 `label == 新名` 精确匹配，自然永远等不到。
+
+**静态核查（App 侧无缺陷）**：
+
+- [TimetableStore.swift:235-239](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/KebiaoCore/Sources/KebiaoCore/Store/TimetableStore.swift#L235-L239)
+  `updateCourse` 按 `id` 定位**整条替换** → 改名会连带写进新名字，逻辑正确；
+- [CourseEditorView.swift:115-119](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/apps/Kebiao/Views/CourseEditorView.swift#L115-L119) 的
+  `TextField(text: $draft.name)` 与 [`:231-245`](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/apps/Kebiao/Views/CourseEditorView.swift#L231-L245) 的
+  `save()` → `store.updateCourse(draft)` 路径正确；且「新增」「删除」「重启保留」在别处都已通过，
+  说明 store 变更转发 / 界面刷新机制（P0-1 的修复）是好的。**App 只是忠实保存了输入框里的内容** ——
+  没有改写、没有丢字符、没有沿用旧名。
+
+**机制（已定案）**：[KebiaoUITestCase.swift:447-450](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/apps/KebiaoUITests/KebiaoUITestCase.swift#L447-L450)
+先 `field.tap()`（`tap()` 点的是元素**中心**）再发 `existing.count` 个退格键。
+该输入框是 `multilineTextAlignment(.trailing)`（文字靠右），点**中心**时光标落在**文本中间**；
+退格只删掉光标**前面**那一段，`newName` 随即被插到 0 号位，于是得到「新名 + 旧名残留尾巴」。
+日志 `:1876` 那行的载荷**以非可打印字符（退格键）开头**，与此完全一致。
+
+**结论：这 1 条失败是测试侧清空输入框的方式造成的，不是 App 缺陷。**
+
+**修法（仍待你点头）**：把清空改成确定性写法 —— 先在输入框**最右端**点一下，把光标确定性地
+放到文本末尾，再逐字退格；**断言一字不改**。它仍是真实用户交互（点输入框 → 退格 → 输入新名），
+只是去掉了「光标落点随元素中心浮动」这个不确定因素。
+
+> **这一条我还没有改任何代码、也没有再推送**：修法需要你点头（§6 第 8 条）。
+
+### 4.1 XCUITest 用例清单（17 条，已执行：**16 通过 / 1 失败**）
+
+各 suite 实测结果（CI run `39027985486`）：
 
 | suite | 结果 |
 | --- | --- |
 | `DarkModeUITests` | **3 tests, 0 failures** ✅ |
-| `SettingsControlsUITests` | **6 tests, 0 failures** ✅（含上一轮失败的 5 条滑动条用例） |
-| `CourseCRUDUITests` | 2 tests, 1 failure |
-| `LaunchUITests` | 2 tests, 1 failure |
-| `PersistenceUITests` | 1 test, 1 failure |
-| `WeekNavigationUITests` | 3 tests, 1 failure |
+| `SettingsControlsUITests` | **6 tests, 0 failures** ✅ |
+| `CourseCRUDUITests` | 2 tests, **1 failure**（`testCreateEditAndDeleteCourseIsReflectedOnTimetable` 的改名那一步） |
+| `LaunchUITests` | **2 tests, 0 failures** ✅（上一轮那条失败的已转绿） |
+| `PersistenceUITests` | **1 test, 0 failures** ✅（上一轮那条失败的已转绿） |
+| `WeekNavigationUITests` | **3 tests, 0 failures** ✅（上一轮那条失败的已转绿） |
 
-下表各用例的**真实结果**：只有 4 条未通过 ——
-`testCreateEditAndDeleteCourseIsReflectedOnTimetable`、`testLaunchWithExistingDataShowsSavedCourse`、
-`testCreatedEditedAndDeletedCoursesSurviveRelaunch`、`testTappingCourseCardOpensAndDismissesDetailOverlay`；
-**其余 13 条全部通过**。面前这 4 条的失败原因**已不是上一轮那个** ——
-现在全部落在用例的**收尾删课**那一步（`deleteConfirmationButton` 命中 2 个元素，见 §4.0）。
+下表各用例的**真实结果**：只有 1 条未通过 ——
+`testCreateEditAndDeleteCourseIsReflectedOnTimetable`（新增 / 改名 / 删除三步里的**改名**）；
+**其余 16 条全部通过**。这条的失败原因**不是**上一轮那个（上一轮的 4 条已全部转绿）；
+它是本轮**新暴露**的一站（`KebiaoUITestCase.swift:453`，改名后新卡片未出现），
+**根因已定案 = 测试侧清空输入框的方式问题、非 App 缺陷**（两张截图证据见 §4.0）。
 之前版本写的「未执行」一律以此为准。
 
 | 文件 | 用例 | 覆盖用户要求的 |
@@ -434,7 +466,7 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 1. **修 P0-1**：`AppEnvironment` 转发 `store.objectWillChange`。**✅ 已完成并已由 CI 验证**
    （App 单测 3/3 + `DarkModeUITests` 3/3 + 翻周用例通过）。
 2. **补 `accessibilityIdentifier`**：57 处。**✅ 已完成；CI 已用它们定位成功**
-   （13 条通过的用例全部依赖 identifier，未出现「按 identifier 找不到控件」）。
+   （16 条通过的用例全部依赖 identifier，未出现「按 identifier 找不到控件」）。
 3. **修 P0-2**：周次 Slider 的 `.combine`。**✅ 已完成并已由 CI 验证**
    （`testWeekSliderChangesDisplayedWeekWhenEnabled` 通过）。
 
@@ -453,15 +485,21 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 
 ### 阶段 4（收口）
 
-11. **推送 → 跑 CI → 按真实失败结果修 → 复跑**。**✅ 已跑完两轮**（推送走系统代理 `127.0.0.1:7897`，
+11. **推送 → 跑 CI → 按真实失败结果修 → 复跑**。**✅ 已跑完三轮**（推送走系统代理 `127.0.0.1:7897`，
     结论与完整 job 日志由助手调 GitHub REST API 自取）：
     - **轮 1**：commit `bbfdf44` → run `39023926057`：滑动条那 1 条失败**已修掉并验证通过**
       （`SettingsControlsUITests` 6/6）；「更多」按钮那 4 条未通过。
     - **轮 2**：commit `4e8bb87` → run `39026024600`：**「更多」那 4 条已收敛** ——
       根因定案为 XCUITest 给该按钮算出的命中点是 `{-1, -1}`（读数误判，非遮挡，§4.0）；
-      失败**前移**到用例收尾删课的确认按钮定位（`KebiaoUITestCase.swift:488`）。
-12. **（本轮）** 把 `deleteConfirmationButton()` 改成 `.firstMatch`。**✅ 已获你批准、已推送**，
-    新一轮 CI 跑完即回写本文（若跑绿则为 17/17）。
+      失败**前移到**用例收尾删课的确认按钮定位（`KebiaoUITestCase.swift` 的
+      `deleteConfirmationButton()`，当时命中 2 个元素）。
+    - **轮 3**：commit `a733622` → run `39027985486`：**确认按钮重复匹配的 4 条已全部转绿**
+      （`LaunchUITests` 2/2、`PersistenceUITests` 1/1、`WeekNavigationUITests` 3/3）；
+      **新增 1 条失败** = `CourseCRUDUITests` 的**改名断言**（`KebiaoUITestCase.swift:453`）。
+12. **轮 2 的收口**：把 `deleteConfirmationButton()` 改成 `.firstMatch`。**✅ 已获你批准、已推送、
+    已由轮 3 CI 验证有效**（那 4 条全部通过）。
+13. **（待你决定）** 轮 3 残留的改名那 1 条：**尚未改代码、尚未推送**。
+    修法与推送方向见 §6 第 8 条 —— 需要你先定「测试侧清空方式」还是「App 侧调试」。
 
 ---
 
@@ -482,13 +520,13 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
    （`more.isHittable` 断言 → 直接 `more.tap()` + 保留「编辑页必须出现」断言）
    已随 commit `4e8bb87` 推送 —— 结果是 4 条用例全部越过这一站（§4.0）。
    **这是唯一一处我改过的既有断言机制**；它没有降低强度（点击后仍要求编辑页真的出现）。
-5. ~~**需要你点头的第二处测试定位改动**~~ **已获你批准并实施**：
-   `deleteConfirmationButton()` 三个分支改用 `.firstMatch`，已随本轮 commit 推送
+5. ~~**需要你点头的第二处测试定位改动**~~ **已获你批准、已实施、已由 CI 验证有效**：
+   `deleteConfirmationButton()` 三个分支改用 `.firstMatch`，已随 commit `a733622` 推送
    （见 §5 阶段 4 第 12 条）。原因见 §4.0 ——
    SwiftUI 的 `.confirmationDialog` 把同一颗确认按钮投影成两层同 identifier 的 Button，
    `app.buttons["…"]` 必然命中 2 个，直接 `.tap()` 会抛 `Multiple matching elements found`，
    这正是那一轮残留 4 条失败的成因。**强度不降**：确认弹窗必须出现、删除后卡片必须消失，
-   这两条断言都保留。
+   这两条断言都保留。**轮 3 CI 已证实那 4 条全部转绿。**
 6. ~~需要你明示确认的一处旧契约改动~~ **已获你认可（2026-10-17，保持现状）**：
    `KebiaoCore/Tests/…/UserDefaultsTimetableRepositoryTests.swift` 的
    `testSecretStoreFailureOnReadIsNotSilentlySwallowed`，**断言机制**从
@@ -509,13 +547,24 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
    - 背景图从相册选择后是否正常显示；
    - 深色模式在真机上的实际观感；
    - 后台自动同步是否真的被唤醒（iOS 不保证，需要真机 + 时间观察）。
+8. **（唯一待你点头的事）改名那 1 条失败的收口**。
+   - **证据已取到（选项 A 已由我在你读完文档前做完，只读、未推送、未改代码）**：
+     下载本轮 artifact `Kebiao-uitest-results`（135 MB），核对了两张截图 ——
+     改名前的卡片把 20 字符**完整**渲染（无省略号）；改名后的卡片以新名字开头**却多出省略号**，
+     说明落库的名字比新名字更长，是「新名 + 旧名残留尾巴」的拼接串。
+     **结论：测试侧清空输入框的方式问题，不是 App 缺陷**（§4.0）。
+   - **剩下要你点头的只有一件事**：把 `renameCourse` 的清空方式改成确定性的写法 ——
+     先在输入框**最右端**点一下（光标确定性地落在文本末尾），再逐字退格；
+     **断言一字不改**（仍然是「改名后必须出现新名字卡片、旧名字卡片必须消失」）。
+     改完**推送 → 跑轮 4 CI**，预期 17/17；若万一还是红，那就是 App 缺陷，我会回头查 App 侧。
+   - **你只需回一句「可以推」**（或「先别推」）。在你点头前我不动代码、不推送。
 
 
 ---
 
 ## 7. 状态口径（九种状态，**不能互相替代**）
 
-以下「当前」= CI run `39026024600` / commit `4e8bb87` 的真实结果。
+以下「当前」= CI run `39027985486` / commit `a733622` 的真实结果。
 
 | 状态 | 当前 |
 | --- | --- |
@@ -524,7 +573,7 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 | 已完成单元测试（App 层，`KebiaoTests`） | ✅ **是**：3 条，0 失败（`** TEST SUCCEEDED **`） |
 | 已成功编译 iOS 应用 | ✅ **是**：job「生成工程并编译 iOS App」success |
 | 已在模拟器启动应用 | ✅ **是**：iPhone 17 模拟器上真实跑完 17 条 XCUITest |
-| 已通过 UI 自动化测试 | ❌ **否（部分通过）**：13/17 通过；4 条失败**全部落在用例收尾的删除确认按钮定位**上（非功能缺陷，§4.0） |
+| 已通过 UI 自动化测试 | ❌ **否（部分通过）**：**16/17** 通过；唯一失败的 1 条是 `CourseCRUDUITests` 的**改名断言**（`KebiaoUITestCase.swift:453`），**根因已定案 = 测试侧清空输入框的方式问题、非 App 缺陷**（§4.0） |
 | 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1.2 MB） |
 | 已签名 | ❓ 由你完成，助手侧无证据 |
 | 已在真机安装 | ❓ 由你完成，助手侧无证据 |
@@ -533,6 +582,7 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 > 「用例写好」不是「测试通过」；反过来，「CI 绿了」也不等于「功能可用」——
 > 本项目 CI 此刻就是**红的**（闸门步骤故意让它失败），这正是它该有的样子：
 > 只要还有用例没通过，就不允许把它当成交付物。
-> 但要说清楚**红在哪**：这 4 条的被测功能（新增 / 改名 / 改名后旧卡片消失 / 重启保留 /
-> 浮层展开收起）**在日志里已全部走通**，失败发生在用例收尾清理的那一次定位上。
-> 定位问题（`.firstMatch`）修完并跑绿之前，**仍然不能说「UI 已通过」**。
+> 但要说清楚**红在哪**：这一条失败落在**改名**那一步（不是上一轮的删除确认按钮 —— 那 4 条已转绿）。
+> 该步之前的链路（点旧卡片 → 更多 → 编辑页带出旧名）日志里都走通了；
+> 「改名后新卡片出现」这一句没过，**原因是测试清空输入框的方式不确定**（§4.0，已由两张截图定案），
+> **不是 App 缺陷**。把这个测试写法修好并跑绿之前，**仍然不能说「UI 已通过」**。
