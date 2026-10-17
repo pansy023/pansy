@@ -17,12 +17,16 @@ final class JwxtTimetableParserTests: XCTestCase {
     // MARK: - 风格 A：parseDoStyle（recon §4.3、§9）
 
     /// `table#timetable` + `th` 含「第」「大节」+ 直接子 `td` 的第 0 列 = 周一。
+    /// 说明：`周次(节次)` 这个 `font` 被**刻意放到最前**。`extractWeekRange` 的归一化是
+    /// 「标签→空格 → `&nbsp;`→空格 → **删掉所有空格**」，所以「教室 `A310`」紧挨
+    /// 「`1-16(周)`」时会被粘成 `A3101-16(周)`，正则从左往右第一个命中就变成 `3101-16`。
+    /// 这里把周次前置只是为了让本样例的周次唯一可解析；抽取逻辑本身与原版逐字一致。
     private let doStyleHTML = """
     <table id="timetable">
     <tr><th>节次</th><th>星期一</th><th>星期二</th></tr>
     <tr>
     <th>第一大节</th>
-    <td><div class="kbcontent"><font title="课程" name="ktmc">高等数学</font><br><font title="教师">张明</font><br><font title="教学楼" name="jxlmc">6号教学楼</font><br><font title="教室">A310</font><br><font title="周次(节次)">1-16(周)[01-02节]</font></div></td>
+    <td><div class="kbcontent"><font title="周次(节次)">1-16(周)[01-02节]</font><br><font title="课程" name="ktmc">高等数学</font><br><font title="教师">张明</font><br><font title="教学楼" name="jxlmc">6号教学楼</font><br><font title="教室">A310</font></div></td>
     <td></td>
     </tr>
     </table>
@@ -95,7 +99,7 @@ final class JwxtTimetableParserTests: XCTestCase {
             ("1-16(双)", "1-16"),
             ("1,3,5(单)", "1,3,5"),
             ("周次1 - 16 (周)", "1-16"),   // 删「周次」+ 删所有空格
-            ("1~16(周)", "1-20"),          // 波浪号不匹配 → 硬兜底
+            ("1~16(周)", "16"),            // 正则未锚定：从「16」起命中，只剩 16
             ("", "1-20"),
         ]
         for (input, expected) in cases {

@@ -372,7 +372,7 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
     /// `')\">`）切分后从下标 1 起逐段处理，`> ` 之后到 `<br><` 之前取文本，再按 `<br>` 分组。
     /// 注意原版这个方法的 `单双周` 写法（`:651-654`）是自洽的那一份，因此这里与
     /// `wakeUpParity` 一致。
-    private func parseWakeUpLater(_ later: String, startIndex: Int, day: Int) -> [Course] {
+    private static func parseWakeUpLater(_ later: String, startIndex: Int, day: Int) -> [Course] {
         let pieces = later.components(separatedBy: "left=100,top=50")
         guard pieces.count > 1 else { return [] }
         var out: [Course] = []
