@@ -60,6 +60,12 @@ targets:
         # 应用图标：apps/Kebiao/Assets.xcassets/AppIcon.appiconset
         # （图形取自安卓端 mipmap/ic_launcher，不重绘，仅等比缩放到 iOS 各档）
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        # `apps/KebiaoTests` 里用 `@testable import Kebiao`（要访问 internal 的
+        # `AppEnvironment`），这要求宿主 App 在 Debug 下可测试。显式写死，
+        # 不依赖 Xcode 模板的隐含默认值。
+        Debug:
+          ENABLE_TESTABILITY: YES
     info:
       path: apps/Kebiao/Info.plist
       properties:
@@ -77,6 +83,61 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         # 阶段④：教务地址若走 http 明文，需要按实测地址补 ATS 例外。
         # iOS 默认禁止明文 HTTP，这里**不预先放开**（见 docs/recon/02-jwxt-login-and-parser.md）。
+
+  # ── App 层单元测试（XCTest，宿主 = Kebiao.app）────────────────
+  #
+  # 和 `KebiaoCore` 的 `swift test` **不是一回事**：
+  # - `swift test` 跑的是纯逻辑包，看不到 App 宿主模块 `Kebiao`；
+  # - 这个 target 用 `@testable import Kebiao` 直接测 App 层代码
+  #   （当前覆盖 `AppEnvironment` —— 本轮 P0-1「状态不转发导致界面不刷新」
+  #    的回归防线）。
+  #
+  # `TEST_HOST` / `BUNDLE_LOADER` 显式写死：app-hosted 单测必须把宿主 App 作为
+  # 加载器才能 `@testable import`，否则编不过。
+  KebiaoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: apps/KebiaoTests
+    dependencies:
+      - target: Kebiao
+      - package: KebiaoCore
+        product: KebiaoCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kebiaocom.example.kebiao.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Kebiao.app/Kebiao"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+
+  # ── UI 自动化测试（XCUITest）─────────────────────────────────
+  #
+  # 与 `KebiaoCore` 的 `swift test` **不是一回事**：`swift test` 只跑纯逻辑，
+  # 从不编译 App、从不启动模拟器。这个 target 才是「真在 iPhone 模拟器里启动
+  # App、找界面元素、点击、输入、切开关并断言」的那一层。
+  #
+  # `TEST_TARGET_NAME: Kebiao` 告诉测试包「要驱动哪个宿主 App」；
+  # `bundle.ui-testing` 生成的 `KebiaoUITests-Runner.app` 由 xcodebuild 自动装上
+  # 模拟器并运行，不需要开发者证书。
+  #
+  # 用例在 `apps/KebiaoUITests/`（见该目录下的说明），全部通过
+  # accessibilityIdentifier 定位，不依赖中文文案。
+  KebiaoUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: apps/KebiaoUITests
+    dependencies:
+      - target: Kebiao
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kebiaocom.example.kebiao.uitests
+        TEST_TARGET_NAME: Kebiao
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
 
   # ── 阶段⑤ 桌面小组件（WidgetKit）─────────────────────────────
   # 目录 `apps/KebiaoWidget/` 尚未创建，且**还没有 WidgetKit 的取证/设计文档**
@@ -106,8 +167,21 @@ schemes:
     build:
       targets:
         Kebiao: all
+        # 测试包只在 `test` 动作里构建，正常 `build` / 归档时不参与。
+        KebiaoTests: [test]
+        KebiaoUITests: [test]
     run:
       config: Debug
+    # `xcodebuild test -scheme Kebiao` 会跑这一组：先 app-hosted 单元测试，
+    # 再真启动模拟器跑 XCUITest。
+    # 只想跑其中一层时用 `-only-testing:KebiaoTests` / `-only-testing:KebiaoUITests`
+    # （CI 就是这么把两者的失败互相隔离开的，见 .github/workflows/ios-build.yml）。
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - KebiaoTests
+        - KebiaoUITests
     # KebiaoCore 的单元测试不属于 App target，用 `swift test` 在 KebiaoCore/ 下跑
     # （见 README.md §4）。不要在这里加 package 的测试 target，XcodeGen 的
     # scheme.test.targets 只接受本工程内的 target。

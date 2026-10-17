@@ -74,11 +74,13 @@ struct SettingsView: View {
             } label: {
                 Text("账号与同步")
             }
+            .accessibilityIdentifier("settings.nav.account")
             NavigationLink {
                 SemesterSettingsView()
             } label: {
                 Text("学期与时间")
             }
+            .accessibilityIdentifier("settings.nav.semester")
         } footer: {
             Text(
                 "「账号与同步」里是教务系统 URL、用户名、密码、定时同步与刷新课表；"
@@ -93,15 +95,25 @@ struct SettingsView: View {
     private var displayOptionsSection: some View {
         Section {
             Toggle("深色模式", isOn: darkThemeBinding)
+                .accessibilityIdentifier("settings.toggle.dark")
             Toggle("优化模式", isOn: optimizeModeBinding)
+                .accessibilityIdentifier("settings.toggle.optimize")
             Toggle("显示周六", isOn: settingsBinding(\.showSaturday))
+                .accessibilityIdentifier("settings.toggle.saturday")
             Toggle("显示周日", isOn: settingsBinding(\.showSunday))
+                .accessibilityIdentifier("settings.toggle.sunday")
             Toggle("显示主界面滑动条", isOn: settingsBinding(\.showWeekSlider))
+                .accessibilityIdentifier("settings.toggle.weekSlider")
             Toggle("自动检查更新", isOn: settingsBinding(\.autoCheckUpdate))
+                .accessibilityIdentifier("settings.toggle.autoCheckUpdate")
             Toggle("显示非本周课程", isOn: settingsBinding(\.showNonCurrentWeekCourses))
+                .accessibilityIdentifier("settings.toggle.nonCurrentWeek")
             Toggle("显示上课时间", isOn: settingsBinding(\.showCourseTime))
+                .accessibilityIdentifier("settings.toggle.courseTime")
             Toggle("显示上课地点", isOn: settingsBinding(\.showCourseLocation))
+                .accessibilityIdentifier("settings.toggle.courseLocation")
             Toggle("显示授课老师", isOn: settingsBinding(\.showCourseTeacher))
+                .accessibilityIdentifier("settings.toggle.courseTeacher")
         } header: {
             Text("显示选项")
         } footer: {
@@ -126,34 +138,39 @@ struct SettingsView: View {
                 "课程卡高度",
                 keyPath: \.courseCellHeightDp,
                 range: 40...120,
-                suffix: "dp"
+                suffix: "dp",
+                identifier: "settings.slider.cellHeight"
             )
             sliderRow(
                 "课程文字",
                 keyPath: \.courseTextSizeSp,
                 range: 7...30,
-                suffix: "sp"
+                suffix: "sp",
+                identifier: "settings.slider.textSize"
             )
             sliderRow(
                 "非本周透明度",
                 keyPath: \.nonCurrentWeekCourseAlphaPercent,
                 range: 0...100,
                 step: 5,
-                suffix: "%"
+                suffix: "%",
+                identifier: "settings.slider.nonCurrentWeekAlpha"
             )
             sliderRow(
                 "卡片透明度",
                 keyPath: \.courseCardAlphaPercent,
                 range: 0...100,
                 step: 5,
-                suffix: "%"
+                suffix: "%",
+                identifier: "settings.slider.cardAlpha"
             )
             sliderRow(
                 "卡片磨砂强度",
                 keyPath: \.courseFrostedIntensityPercent,
                 range: 0...100,
                 step: 5,
-                suffix: "%"
+                suffix: "%",
+                identifier: "settings.slider.frosted"
             )
 
             VStack(alignment: .leading, spacing: 8) {
@@ -161,6 +178,7 @@ struct SettingsView: View {
                     .font(.footnote)
                     .foregroundColor(.secondary)
                 cardPreview
+                    .accessibilityIdentifier("settings.preview.card")
                 Text("预览用的就是网格里那张卡（`CourseCard`），尺寸、字号与配色实时跟随上面的滑动条变化。")
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -196,11 +214,13 @@ struct SettingsView: View {
         Button("从相册选择背景图") {
             showingPhotoPicker = true
         }
+        .accessibilityIdentifier("settings.button.pickPhoto")
 
         Button("清除背景图（恢复默认）") {
             clearBackground()
         }
         .disabled(!settings.hasCustomBackground)
+        .accessibilityIdentifier("settings.button.clearPhoto")
 
         VStack(alignment: .leading, spacing: 6) {
             TextField("手动输入图片地址", text: $manualImageAddress)
@@ -208,8 +228,10 @@ struct SettingsView: View {
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
                 .onSubmit(applyManualImageAddress)
+                .accessibilityIdentifier("settings.field.imageAddress")
             Button("应用图片地址", action: applyManualImageAddress)
                 .disabled(manualImageAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("settings.button.applyImageAddress")
         }
     }
 
@@ -381,7 +403,8 @@ struct SettingsView: View {
         keyPath: WritableKeyPath<AppSettings, Int>,
         range: ClosedRange<Int>,
         step: Int = 1,
-        suffix: String
+        suffix: String,
+        identifier: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -390,9 +413,11 @@ struct SettingsView: View {
                 Text("\(settings[keyPath: keyPath]) \(suffix)")
                     .foregroundColor(.secondary)
                     .monospacedDigit()
+                    .accessibilityIdentifier("\(identifier).value")
             }
             Slider(value: intBinding(keyPath, range: range), in: Double(range.lowerBound)...Double(range.upperBound), step: Double(step))
                 .accessibilityLabel(title)
+                .accessibilityIdentifier(identifier)
         }
     }
 }

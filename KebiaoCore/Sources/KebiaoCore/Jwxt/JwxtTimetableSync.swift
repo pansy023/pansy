@@ -67,7 +67,7 @@ public struct JwxtTimetableSync: @unchecked Sendable {
         )
         guard loginResult.isLoggedIn else {
             log?("登录教务系统失败，请检查账号密码")
-            throw JwxtSyncError.loginFailed
+            throw JwxtSyncError.loginFailed(detail: loginResult.diagnostic)
         }
 
         let parser = QiangzhiJwxtParser(session: session, log: log)
@@ -80,14 +80,20 @@ public struct JwxtTimetableSync: @unchecked Sendable {
     }
 }
 
-/// 同步层错误。文案逐字取自 Android `JwxtTimetableSync.java:85`。
+/// 同步层错误。
+///
+/// 文案以 Android `JwxtTimetableSync.java:85` 的
+/// 「登录教务系统失败，请检查账号密码」**为前缀逐字保留**，后面再追加括号里的
+/// 具体诊断（`detail`）—— 安卓原版只有这一句，但它在真机上无法区分失败原因，
+/// 排查成本极高；括号内的部分是 iOS 侧新增的诊断信息，不改变原句本身。
 public enum JwxtSyncError: Error, LocalizedError, Equatable, Sendable {
     /// 登录未通过（`!loginResult.isLoggedIn`）。
-    case loginFailed
+    case loginFailed(detail: String)
 
     public var errorDescription: String? {
         switch self {
-        case .loginFailed: return "登录教务系统失败，请检查账号密码"
+        case let .loginFailed(detail):
+            return "登录教务系统失败，请检查账号密码（诊断：\(detail)）"
         }
     }
 }

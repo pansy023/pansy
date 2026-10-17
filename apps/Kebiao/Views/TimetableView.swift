@@ -162,6 +162,9 @@ struct TimetableView: View {
                 step: 1
             )
             .accessibilityLabel("周次")
+            // 拖动停止后供 VoiceOver 读出的完整周次文案（"第N周"）。
+            .accessibilityValue(store.weekNumberText)
+            .accessibilityIdentifier("tt.week.slider")
             Text("第\(current)周")
                 .font(.system(size: 11))
                 .foregroundColor(Theme.secondaryInk(dark: dark))
@@ -173,9 +176,14 @@ struct TimetableView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Theme.panelColor(dark: dark, hasCustomBackground: settings.hasCustomBackground))
         )
-        // 拖动停止后供 VoiceOver 读出的完整周次文案。
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(store.weekNumberText)
+        // ⚠️ 这里**不能**用 `.accessibilityElement(children: .combine)`。
+        //
+        // 早先为了「让 VoiceOver 读出完整周次」在容器上加了 `.combine` + `.accessibilityValue`，
+        // 结果把容器合成了**一个**无障碍元素，里面 Slider 自己的 identifier 被吞掉 ——
+        // XCUITest 的 `app.sliders["tt.week.slider"]` 直接找不到元素，
+        // 于是「主界面滑动条」这条链路的 UI 测试必然失败（而界面本身并没有坏）。
+        // 现在把 `accessibilityValue` 挂在 Slider 自己身上，VoiceOver 语义不变，
+        // 同时 Slider 仍是独立元素，可被 `app.sliders["tt.week.slider"]` 定位。
     }
 
     // MARK: - 数据

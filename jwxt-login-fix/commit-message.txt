@@ -1,0 +1,24 @@
+修复教务登录失败：encryptCode 循环上界写错（code.length 被写成常量 20）
+
+根因（有实证）：
+- 登录页自带 JS 是 `for (var i = 0; i < code.length; i++)`，Java 是 `while (i < length)`，
+  两者的循环上界都是 **code 的长度**；原 Swift 实现写成 `while i < interleaveLimit`（固定 20）。
+- 当 `用户名 + "%%%" + 密码` 短于 20 字符（例：10 位学号 + 6 位密码 = 19）时，code 已取完
+  仍在空转，会把多余的 scode 片段拼到 encoded 尾部。用服务端解密器反解可证：
+  基准解出 `2023011234%%%abc123`，修前解出 `2023011234%%%abc123O` —— 密码多一个字符，
+  服务端必然判「密码错误」，表现为安卓原版那句笼统的「登录教务系统失败，请检查账号密码」。
+
+改动：
+- JwxtEncryptor.encryptCode：循环上界改为 `code.count`，第 20 位起追加剩余后立即结束
+  （等价 Java 的 return、登录页 JS else 分支的 `i = code.length`）。
+- JwxtLoginClient.JwxtLoginResult 新增 diagnostic：把每个失败分支的具体事实带出来。
+- JwxtTimetableSync：JwxtSyncError.loginFailed 改为携带 detail；errorDescription
+  以安卓原文「登录教务系统失败，请检查账号密码」为前缀逐字保留，括号内追加诊断，
+  避免真机上所有失败都长得一模一样、无法定位。
+- 测试：新增判别性用例 testShortCodeStopsAtCodeLengthInsteadOfTwenty（修复前必失败）；
+  同步层文案断言改为「前缀一致 + 诊断后缀」。
+
+服务器侧实测记录（本机直连 https://jwgl.xihang.com.cn）：
+- TLS 证书链完整（*.xihang.com.cn，sslTrus DV，TLS 1.3）→ 与 ATS 无关；
+- POST /Logon.do?method=logon&flag=sess 返回 `scode#sxh` 形状正常；
+- 错误口令时响应注入「密码错误」文案，登录页 <title> 为「登录」。

@@ -46,13 +46,13 @@ struct WeekSwitcher: View {
             Spacer(minLength: 8)
 
             HStack(spacing: 6) {
-                stepButton(systemImage: "chevron.left", label: "上一周") {
+                stepButton(systemImage: "chevron.left", label: "上一周", identifier: "tt.week.prev") {
                     store.shiftWeek(by: -1)
                 }
                 if showsBackToCurrentWeek {
                     backToCurrentWeekButton
                 }
-                stepButton(systemImage: "chevron.right", label: "下一周") {
+                stepButton(systemImage: "chevron.right", label: "下一周", identifier: "tt.week.next") {
                     store.shiftWeek(by: 1)
                 }
             }
@@ -93,7 +93,12 @@ struct WeekSwitcher: View {
 
     // MARK: - 按钮
 
-    private func stepButton(systemImage: String, label: String, action: @escaping () -> Void) -> some View {
+    private func stepButton(
+        systemImage: String,
+        label: String,
+        identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 13, weight: .semibold))
@@ -104,6 +109,7 @@ struct WeekSwitcher: View {
                 )
         }
         .accessibilityLabel(label)
+        .accessibilityIdentifier(identifier)
     }
 
     private var backToCurrentWeekButton: some View {
@@ -123,6 +129,7 @@ struct WeekSwitcher: View {
         }
         .disabled(isCurrent)
         .accessibilityLabel("回到本周")
+        .accessibilityIdentifier("tt.week.back")
     }
 
     // MARK: - 文本

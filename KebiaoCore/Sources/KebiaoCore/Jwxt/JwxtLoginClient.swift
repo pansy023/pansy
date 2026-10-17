@@ -158,6 +158,32 @@ public final class JwxtLoginClient: @unchecked Sendable {
                  .transportFailure, .unknown: return false
             }
         }
+
+        /// 失败时的**具体**原因（给人看的诊断串）。
+        ///
+        /// 加这个是因为原来所有失败都只会落成 Android 的同一句话
+        /// 「登录教务系统失败，请检查账号密码」，在真机上没法区分到底是
+        /// 「服务端判密码错」「没拿到 scode/sxh」「被跳回登录页」还是「网络异常」，
+        /// 排查只能靠猜。这里把分支事实原样带出来，供上层拼进错误文案。
+        public var diagnostic: String {
+            switch self {
+            case .successWelcome: return "登录成功（响应含「欢迎」/「主页」）"
+            case let .selectionGateway(referer):
+                return "登录成功（选课入口页，Referer=\(referer ?? "无")）"
+            case let .titleVerified(title):
+                return "登录成功（验活页 title=\(title)）"
+            case .invalidCredentials:
+                return "服务端判定账号或密码错误（响应含「用户名或密码错误」/「密码错误」）"
+            case .sessionKeyMissing:
+                return "未取到加密参数：/Logon.do?method=logon&flag=sess 响应为空、为 no 或不含 #"
+            case let .titleRejected(title):
+                return "被跳回登录页（验活页 title=\(title)）"
+            case let .transportFailure(message):
+                return "网络/传输异常：\(message)"
+            case let .unknown(detail):
+                return "未知响应：\(detail)"
+            }
+        }
     }
 
     /// ⚠️ 注意命名：为免与 `JwxtSession` 底层错误混淆，登录层错误单独定义（见文件尾）。

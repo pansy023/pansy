@@ -30,10 +30,34 @@ final class AppEnvironment: ObservableObject {
     /// 由 `.sheet(item:)` 的回调把这里清回 `nil`。
     @Published var editorRequest: CourseEditorView.Mode?
 
+    /// `store` 变更的转发订阅。见 `init` 里的说明。
+    private var storeObservation: AnyCancellable?
+
     /// - Parameter store: 注入的 store。测试 / 预览可以传一个用
     ///   `InMemoryTimetableRepository` 构造的实例。
     init(store: TimetableStore) {
         self.store = store
+        // ⚠️ 必须转发，否则整个界面不会刷新。
+        //
+        // 八个视图（`RootView` / `TimetableView` / `TimetableGrid` / `WeekSwitcher` /
+        // `CourseEditorView` / `SettingsView` / `AccountSyncSettingsView` /
+        // `SemesterSettingsView`）拿数据的写法都是
+        // `@EnvironmentObject private var environment: AppEnvironment` +
+        // `environment.store`。而 `@EnvironmentObject` 只订阅 `AppEnvironment`
+        // **自身**的 `objectWillChange` —— `TimetableStore` 的 `courses` / `settings` /
+        // `uiFlags` / `weekOffset` 都是它**自己**的 `@Published`，变更时只会触发
+        // `TimetableStore.objectWillChange`，没有任何视图订阅它。
+        //
+        // 症状：点「上一周 / 下一周」翻周、拨「深色模式 / 优化模式」或任一设置开关、
+        // 拖设置页滑条 —— 数据其实已经写进 store 并落盘，但界面一个字都不变，
+        // 看起来就是「按钮点了没反应」「开关切不动」。
+        //
+        // 之所以看着「有时候又是好的」：`CourseEditorView` 保存后 `dismiss()`、
+        // `SemesterSettingsView` 保存后设本地 `notice`（`@State`），这些**视图自己的**
+        // 状态变化会顺带触发一次重绘，把 store 的新值带出来 —— 那是偶然，不是设计。
+        storeObservation = store.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     /// App 运行时使用的构造方式：真实持久化实现。

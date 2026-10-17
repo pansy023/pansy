@@ -182,6 +182,7 @@ struct CourseDetailOverlay: View {
             }
             .padding(8)
             .accessibilityLabel("收起")
+            .accessibilityIdentifier("overlay.button.dismiss")
 
             // 「更多」：固定在卡片底部，永远可点（不放在 ScrollView 里，
             // 免得内容超高时按钮被顶出可视区）。
@@ -202,6 +203,7 @@ struct CourseDetailOverlay: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
+                .accessibilityIdentifier("overlay.button.more")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

@@ -42,14 +42,33 @@ final class JwxtEncryptorTests: XCTestCase {
 
     // MARK: - 越界保护：code 短于 20 字符
 
-    /// Java 版在这里会抛 `StringIndexOutOfBoundsException`（recon doc §2.4 注明 jadx 未加保护），
-    /// iOS 端按文档要求加了保护：越界位置按空串参与拼接。
+    /// 循环上界必须是 `code` 的长度（Java `while (i < length)`、登录页 JS
+    /// `for (i = 0; i < code.length; i++)` 都是这个上界），**不是**常量 20。
     func testShortCodeDoesNotCrashWhenAllDigitsAreZero() {
         // sxh 全为 '0' → 每轮 take=0 → 输出应等于 code 的字符（此处只有 3 个），
-        // 第 4 轮起 code 越界、按空串处理，尾部追加也为空。
+        // 循环在 i=3 处因 `i == code.length` 收尾。
         XCTAssertEqual(
             JwxtEncryptor.encryptCode(raw: "abc", scode: "XYZ", sxh: String(repeating: "0", count: 20)),
             "abc"
+        )
+    }
+
+    /// 短 code 且 `sxh` 位非零——这是能区分「上界 20」与「上界 code.length」的判别性用例。
+    ///
+    /// 早期实现把上界写成常量 20：code 取完后仍在空转，会把多余的 `scode` 片段
+    /// （`"6789"`）拼到 encoded 尾部，与服务端算出的值不一致 → 服务端解密失败
+    /// → 登录被误判为「密码错误」。
+    func testShortCodeStopsAtCodeLengthInsteadOfTwenty() {
+        // code  : "abc"          （3 字符）
+        // scode : "0123456789"   （10 字符）
+        // sxh   : "12345678901234567890"
+        //   i=0 d=1 → "a" + "0"      scode 剩 123456789
+        //   i=1 d=2 → "b" + "12"     scode 剩 3456789
+        //   i=2 d=3 → "c" + "345"    scode 剩 6789
+        //   i=3 == code.length → 结束，剩下的 "6789" **不** 拼接
+        XCTAssertEqual(
+            JwxtEncryptor.encryptCode(raw: "abc", scode: "0123456789", sxh: "12345678901234567890"),
+            "a0b12c345"
         )
     }
 

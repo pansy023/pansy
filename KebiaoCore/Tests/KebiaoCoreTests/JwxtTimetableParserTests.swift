@@ -199,9 +199,16 @@ final class JwxtTimetableParserTests: XCTestCase {
     // MARK: - 同步层文案（`sync/JwxtTimetableSync.java:85`）
 
     func testLoginFailureMessageMatchesAndroid() {
+        // Android 原文「登录教务系统失败，请检查账号密码」逐字作为前缀保留，
+        // iOS 侧在后面括号里追加具体诊断（仅此处不同）。
         XCTAssertEqual(
-            JwxtSyncError.loginFailed.errorDescription,
-            "登录教务系统失败，请检查账号密码"
+            JwxtSyncError.loginFailed(detail: "服务端判定账号或密码错误").errorDescription,
+            "登录教务系统失败，请检查账号密码（诊断：服务端判定账号或密码错误）"
+        )
+        XCTAssertEqual(
+            JwxtSyncError.loginFailed(detail: "网络/传输异常：x")
+                .errorDescription?.hasPrefix("登录教务系统失败，请检查账号密码"),
+            true
         )
     }
 }

@@ -115,14 +115,17 @@ struct CourseEditorView: View {
                 LabeledContent("课程名称") {
                     TextField("必填", text: $draft.name)
                         .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("editor.field.name")
                 }
                 LabeledContent("教师") {
                     TextField("可留空", text: $draft.teacher)
                         .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("editor.field.teacher")
                 }
                 LabeledContent("地点") {
                     TextField("可留空", text: $draft.location)
                         .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("editor.field.location")
                 }
             }
 
@@ -133,12 +136,14 @@ struct CourseEditorView: View {
                         Text(name).tag(index + 1)
                     }
                 }
+                .accessibilityIdentifier("editor.picker.weekday")
 
                 Picker("开始节数", selection: $draft.startPeriod) {
                     ForEach(periodRange, id: \.self) { period in
                         Text("第 \(period) 节").tag(period)
                     }
                 }
+                .accessibilityIdentifier("editor.picker.startPeriod")
                 .onChange(of: draft.startPeriod) { _, newValue in
                     // `:1404-1406` 的 `coerceAtLeast(endPeriod, startPeriod)`。
                     if draft.endPeriod < newValue { draft.endPeriod = newValue }
@@ -149,6 +154,7 @@ struct CourseEditorView: View {
                         Text("第 \(period) 节").tag(period)
                     }
                 }
+                .accessibilityIdentifier("editor.picker.endPeriod")
             } header: {
                 Text("上课时间")
             }
@@ -159,6 +165,7 @@ struct CourseEditorView: View {
                         Text("第 \(week) 周").tag(week)
                     }
                 }
+                .accessibilityIdentifier("editor.picker.startWeek")
                 .onChange(of: draft.startWeek) { _, newValue in
                     if draft.endWeek < newValue { draft.endWeek = newValue }
                 }
@@ -168,12 +175,14 @@ struct CourseEditorView: View {
                         Text("第 \(week) 周").tag(week)
                     }
                 }
+                .accessibilityIdentifier("editor.picker.endWeek")
 
                 Picker("单双周", selection: $draft.isOdd) {
                     ForEach(Array(Self.parityNames.enumerated()), id: \.offset) { index, name in
                         Text(name).tag(index)
                     }
                 }
+                .accessibilityIdentifier("editor.picker.parity")
             } header: {
                 Text("周次")
             } footer: {
@@ -186,6 +195,7 @@ struct CourseEditorView: View {
                         showsDeleteConfirmation = true
                     }
                     .frame(maxWidth: .infinity, alignment: .center)
+                    .accessibilityIdentifier("editor.button.delete")
                 }
             }
         }
@@ -194,10 +204,12 @@ struct CourseEditorView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("取消") { dismiss() }
+                    .accessibilityIdentifier("editor.button.cancel")
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button(isEditing ? "保存修改" : "添加课程") { save() }
                     .disabled(!canSave)
+                    .accessibilityIdentifier("editor.button.save")
             }
         }
         .confirmationDialog(
@@ -209,6 +221,7 @@ struct CourseEditorView: View {
                 store.deleteCourse(draft)
                 dismiss()
             }
+            .accessibilityIdentifier("editor.dialog.confirmDelete")
             Button("取消", role: .cancel) {}
         } message: {
             Text("原版点该按钮会直接删除；iOS 端多加一次确认，避免误触后无法撤销。")

@@ -96,11 +96,13 @@ struct SemesterSettingsView: View {
                     Spacer(minLength: 12)
                     Text(draftSemesterStartDate.map { WeekLogic.formatDate($0, calendar: store.calendar) } ?? "未设置")
                         .foregroundColor(.secondary)
+                        .accessibilityIdentifier("semester.value.startDate")
                     Image(systemName: "chevron.right")
                         .font(.footnote)
                         .foregroundStyle(.tertiary)
                 }
             }
+            .accessibilityIdentifier("semester.button.startDate")
 
             DatePicker(
                 "第一节开始时间",
@@ -108,8 +110,20 @@ struct SemesterSettingsView: View {
                 displayedComponents: .hourAndMinute
             )
 
-            stepperRow("每节时长", value: $draftPeriodDurationMinutes, range: 5...120, suffix: "分钟")
-            stepperRow("课间时长", value: $draftBreakDurationMinutes, range: 0...60, suffix: "分钟")
+            stepperRow(
+                "每节时长",
+                value: $draftPeriodDurationMinutes,
+                range: 5...120,
+                suffix: "分钟",
+                identifier: "semester.stepper.periodDuration"
+            )
+            stepperRow(
+                "课间时长",
+                value: $draftBreakDurationMinutes,
+                range: 0...60,
+                suffix: "分钟",
+                identifier: "semester.stepper.breakDuration"
+            )
             stepperRow(
                 "一天课程节数",
                 value: Binding(
@@ -120,9 +134,16 @@ struct SemesterSettingsView: View {
                     }
                 ),
                 range: 1...20,
-                suffix: "节"
+                suffix: "节",
+                identifier: "semester.stepper.periodsPerDay"
             )
-            stepperRow("学期周数", value: $draftSemesterWeeks, range: 1...30, suffix: "周")
+            stepperRow(
+                "学期周数",
+                value: $draftSemesterWeeks,
+                range: 1...30,
+                suffix: "周",
+                identifier: "semester.stepper.semesterWeeks"
+            )
 
             // 「时间表名称」：显示当前方案名；点开输入新名称 → 新增一套方案。
             Button {
@@ -140,6 +161,7 @@ struct SemesterSettingsView: View {
                         .foregroundStyle(.tertiary)
                 }
             }
+            .accessibilityIdentifier("semester.button.profileName")
         } header: {
             // 组名对齐原版 `SettingsScreenKt.java:1489` 的 `SectionTitle("学期与时间")`。
             Text("学期与时间")
@@ -156,20 +178,30 @@ struct SemesterSettingsView: View {
         }
     }
 
+    /// 一行「标签 + 读数 + 步进器」。
+    ///
+    /// 读数**放在步进器外面**（独立 `Text`）而不是当它的 label：一是视觉不变
+    /// （仍是一行三个元素），二是读数是独立的无障碍元素，XCUITest 能直接读到它、
+    /// 用来断言「点加号后数值真的变了」（放在 `Stepper` 的 label 里会被合并掉）。
     private func stepperRow(
         _ title: String,
         value: Binding<Int>,
         range: ClosedRange<Int>,
-        suffix: String
+        suffix: String,
+        identifier: String
     ) -> some View {
-        Stepper(value: value, in: range) {
-            HStack {
-                Text(title)
-                Spacer(minLength: 12)
-                Text("\(value.wrappedValue) \(suffix)")
-                    .foregroundColor(.secondary)
-                    .monospacedDigit()
+        HStack {
+            Text(title)
+            Spacer(minLength: 12)
+            Text("\(value.wrappedValue) \(suffix)")
+                .foregroundColor(.secondary)
+                .monospacedDigit()
+                .accessibilityIdentifier("\(identifier).value")
+            Stepper(value: value, in: range) {
+                EmptyView()
             }
+            .labelsHidden()
+            .accessibilityIdentifier(identifier)
         }
     }
 
@@ -243,6 +275,7 @@ struct SemesterSettingsView: View {
             Button("保存设置") {
                 save()
             }
+            .accessibilityIdentifier("semester.button.save")
         } footer: {
             Text(
                 "「保存设置」把本页所有改动一次写入：学期开始日期、第一节开始时间、"
@@ -311,18 +344,21 @@ struct SemesterSettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { activeSheet = nil }
+                        .accessibilityIdentifier("semester.sheet.cancel")
                 }
                 ToolbarItem(placement: .bottomBar) {
                     Button("清除日期") {
                         draftSemesterStartDate = nil
                         activeSheet = nil
                     }
+                    .accessibilityIdentifier("semester.sheet.clearDate")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") {
                         draftSemesterStartDate = store.calendar.startOfDay(for: pickerStartDate)
                         activeSheet = nil
                     }
+                    .accessibilityIdentifier("semester.sheet.done")
                 }
             }
         }
@@ -335,6 +371,7 @@ struct SemesterSettingsView: View {
                 TextField("时间表名称", text: $newProfileName)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .accessibilityIdentifier("semester.field.profileName")
             }
             .navigationTitle("新建时间表名称")
             .navigationBarTitleDisplayMode(.inline)
@@ -344,6 +381,7 @@ struct SemesterSettingsView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("确定") { createProfile() }
+                        .accessibilityIdentifier("semester.button.profileConfirm")
                 }
             }
         }

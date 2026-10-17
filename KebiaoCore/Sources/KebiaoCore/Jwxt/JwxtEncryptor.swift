@@ -39,21 +39,32 @@ public enum JwxtEncryptor {
 
         var out = ""
         var i = 0
-        while i < interleaveLimit {
-            // `sxh.substring(i, i+1)` 后 `StringsKt.toIntOrNull`：越界或非数字一律按 0 处理。
-            let digit = i < x.count ? (Int(String(x[i])) ?? 0) : 0
-            // `code.substring(i, i+1)`：越界位置按空串处理（见类型注释里的越界保护）。
-            let codeChar = i < code.count ? String(code[i]) : ""
-            // Java 的 `intValue <= scodeOrig.length() ? scodeOrig.substring(0, intValue) : scodeOrig`
-            // 等价于「取前 min(digit, 剩余长度) 个字符」——剩余不足时 Java 取全部并让 scode 置空。
-            let take = min(digit, scode.count)
-            out += codeChar + String(scode[0..<take])
-            scode.removeFirst(take)
-            i += 1
-        }
-        // `:158`：下标 20 之后的剩余部分原样追加。
-        if i < code.count {
-            out += String(code[i...])
+        // ⚠️ 循环上界是 **`code` 的长度**，不是常量 20。Java 是 `while (i < length)`
+        // （`QiangzhiJwxtParser.java:129-132`，`length = code.length()`），登录页自带的
+        // JS 同样是 `for (var i = 0; i < code.length; i++)`，并且 `else` 分支里
+        // `i = code.length` 立刻收尾 —— 二者一致。
+        //
+        // 早先这里写成 `while i < interleaveLimit`（固定 20），当
+        // `用户名+长度("3")+密码 < 20`（例如 10 位学号 + 6 位密码 = 19）时，
+        // code 已经取完却仍在空转，会把多余的 `scode` 片段拼到 encoded 尾部，
+        // 与服务端算出的值不一致 → 服务端解密失败 → 登录被判「密码错误」。
+        while i < code.count {
+            if i < interleaveLimit {
+                // `sxh.substring(i, i+1)` 后 `StringsKt.toIntOrNull`：非数字按 0 处理；
+                // `sxh` 本身短于 20 时按越界保护取 0（Java 在这里会抛下标越界）。
+                let digit = i < x.count ? (Int(String(x[i])) ?? 0) : 0
+                // Java 的 `intValue <= scodeOrig.length() ? scodeOrig.substring(0, intValue) : scodeOrig`
+                // 等价于「取前 min(digit, 剩余长度) 个字符」——剩余不足时 Java 取全部并让 scode 置空。
+                let take = min(digit, scode.count)
+                out += String(code[i])
+                out += String(scode[0..<take])
+                scode.removeFirst(take)
+                i += 1
+            } else {
+                // `:156-158` / JS 的 `else` 分支：下标 20 起的剩余部分原样追加，随即结束。
+                out += String(code[i...])
+                break
+            }
         }
         return out
     }

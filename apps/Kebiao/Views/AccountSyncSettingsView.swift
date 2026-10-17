@@ -70,9 +70,14 @@ struct AccountSyncSettingsView: View {
 
     private var accountSection: some View {
         Section {
-            labelTextField("教务系统 URL", text: $draftJwxtUrl, keyboard: .URL)
-            labelTextField("用户名", text: $draftUsername)
-            labelSecureField("密码", text: $draftPassword)
+            labelTextField(
+                "教务系统 URL",
+                text: $draftJwxtUrl,
+                identifier: "account.field.url",
+                keyboard: .URL
+            )
+            labelTextField("用户名", text: $draftUsername, identifier: "account.field.username")
+            labelSecureField("密码", text: $draftPassword, identifier: "account.field.password")
         } header: {
             Text("账号与教务系统")
         } footer: {
@@ -90,6 +95,7 @@ struct AccountSyncSettingsView: View {
     private var autoSyncSection: some View {
         Section {
             Toggle("定时同步教务课表", isOn: $draftAutoSync)
+                .accessibilityIdentifier("account.toggle.autoSync")
         } footer: {
             Text(
                 // 小字逐字取自 `SettingsScreenKt.java:1456`。
@@ -117,21 +123,25 @@ struct AccountSyncSettingsView: View {
                 }
             }
             .disabled(isSyncingTimetable)
+            .accessibilityIdentifier("account.button.refresh")
 
             if !syncStatusText.isEmpty {
                 Text(syncStatusText)
                     .font(.footnote)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("account.status.sync")
             }
 
             Button("测试课表自动同步通知") {
                 Task { await sendTestNotification() }
             }
+            .accessibilityIdentifier("account.button.testNotification")
 
             Button("保存设置") {
                 saveAccountSettings()
             }
+            .accessibilityIdentifier("account.button.save")
         } footer: {
             Text(
                 "「刷新课表」用本页已保存的 URL、用户名、密码登录教务系统并抓取课表，"
@@ -223,6 +233,7 @@ struct AccountSyncSettingsView: View {
     private func labelTextField(
         _ title: String,
         text: Binding<String>,
+        identifier: String,
         keyboard: UIKeyboardType = .default
     ) -> some View {
         HStack {
@@ -234,17 +245,23 @@ struct AccountSyncSettingsView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .accessibilityLabel(title)
+                .accessibilityIdentifier(identifier)
         }
     }
 
     /// 一行「标签 + 安全输入框」（密码只进 Keychain）。
-    private func labelSecureField(_ title: String, text: Binding<String>) -> some View {
+    private func labelSecureField(
+        _ title: String,
+        text: Binding<String>,
+        identifier: String
+    ) -> some View {
         HStack {
             Text(title)
             Spacer(minLength: 12)
             SecureField("", text: text)
                 .multilineTextAlignment(.trailing)
                 .accessibilityLabel(title)
+                .accessibilityIdentifier(identifier)
         }
     }
 }

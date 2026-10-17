@@ -30,6 +30,8 @@ struct RootView: View {
                             Image(systemName: "gearshape")
                         }
                         .accessibilityLabel("设置")
+                        // XCUITest 定位用；改中文文案不会影响测试。
+                        .accessibilityIdentifier("tt.nav.settings")
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
@@ -38,6 +40,7 @@ struct RootView: View {
                             Image(systemName: "plus")
                         }
                         .accessibilityLabel("添加课程")
+                        .accessibilityIdentifier("tt.nav.addCourse")
                     }
                 }
         }
