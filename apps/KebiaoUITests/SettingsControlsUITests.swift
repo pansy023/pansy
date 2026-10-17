@@ -65,6 +65,15 @@ final class SettingsControlsUITests: KebiaoUITestCase {
             // 所以必须先滚动把它翻出来再断言。原来这里是裸 `waitForExistence`，
             // 只会等到超时 —— 那是测试编排的问题，不是滑动条坏了。
             waitForHittable(slider, "设置页找不到可点的滑动条 \(id)")
+            // ⚠️ 再补一步：「中心点可点」不等于「整条看得见」。
+            //
+            // 「非本周透明度」这条一开始只从屏幕底边露出一点点（实测它的当前值文本落在
+            // y=843.7、滑动条本体已越过屏幕下沿），`isHittable` 却为真；接着
+            // `adjust(toNormalizedSliderPosition:)` 按当前位置推算出的拖拽起点落在屏幕外，
+            // 事件被丢弃，值一直是 45 % —— 而上面两条（课程卡高度、课程文字）本来就整条在
+            // 屏内、不需要滚动，所以只有这一条失败。这里先把它滚到整条可见并等滚动停稳，
+            // 断言本身一个字没改（仍然是「拖动后数值文本必须变化」）。
+            scrollFullyIntoViewAndSettle(slider)
 
             let valueLabel = app.staticTexts["\(id).value"]
             XCTAssertTrue(

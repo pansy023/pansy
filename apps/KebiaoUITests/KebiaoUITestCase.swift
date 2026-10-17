@@ -202,6 +202,54 @@ class KebiaoUITestCase: XCTestCase {
         return false
     }
 
+    /// 等元素在屏上**停稳**（滚动惯性走完）：连续两次采样位置一致即视为停稳。
+    ///
+    /// 为什么必须等：`app.swipeUp()` / `swipeDown()` 之后 `Form` / `List` 还带惯性，
+    /// 惯性没停时落下来的第一条手势会被滚动视图吃掉（只用来「刹住」滚动），
+    /// 控件根本收不到那次拖拽。
+    @discardableResult
+    func waitUntilFrameStable(_ element: XCUIElement, timeout: TimeInterval = 3) -> Bool {
+        guard element.exists else { return false }
+        var previous = element.frame
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            guard element.exists else { return false }
+            let current = element.frame
+            if current == previous { return true }
+            previous = current
+        }
+        return false
+    }
+
+    /// 把元素滚到**整条**都落在屏内，并等它停稳。
+    ///
+    /// 不能拿「中心点可点」(`isHittable`) 代替，实测栽过两次：
+    /// 1. 只判中心点的话，一个控件可以「只从屏幕底边露出一点点」就算可点。此时按它
+    ///    当前位置推算出的拖拽起点会落到屏幕外，事件被系统丢弃，控件的值根本不变 ——
+    ///    「非本周透明度」滑动条就是这样：它要先滑一下才露出来，而它上面两条
+    ///    （课程卡高度、课程文字）一开始就在屏内、无需滚动，所以只有那一条失败；
+    /// 2. 惯性未停时第一条手势会被滚动视图吃掉（见 `waitUntilFrameStable`）。
+    ///
+    /// 比可视区还高的元素滚不「全」，遇到就直接放弃（只保证中心点可点）。
+    func scrollFullyIntoViewAndSettle(_ element: XCUIElement, maxSwipes: Int = 8) {
+        let safe = app.frame.insetBy(dx: 0, dy: 24)
+        guard element.exists, element.frame.height <= safe.height else { return }
+        var swipes = 0
+        while element.exists, swipes < maxSwipes {
+            let frame = element.frame
+            if frame.minY >= safe.minY, frame.maxY <= safe.maxY { break }
+            if frame.maxY > safe.maxY {
+                app.swipeUp()
+            } else {
+                app.swipeDown()
+            }
+            swipes += 1
+            waitUntilFrameStable(element)
+        }
+        waitUntilFrameStable(element)
+    }
+
     /// 边滚动边等元素出现**且可点**，返回该元素。
     @discardableResult
     func waitForHittable(

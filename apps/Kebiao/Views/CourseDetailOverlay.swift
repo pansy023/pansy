@@ -160,65 +160,79 @@ struct CourseDetailOverlay: View {
     // MARK: 详情内容
 
     private var detailCard: some View {
-        ZStack(alignment: .topTrailing) {
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(course.name)
-                        .font(.system(size: titleSize, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(3)
-                        .minimumScaleFactor(0.8)
-                        .padding(.trailing, 26)
+        // 卡片是**上下两段**的 `VStack`，不是「一个铺满整卡的 ScrollView + 叠在上面的按钮」。
+        //
+        // ⚠️ 原来是 `ZStack(alignment: .topTrailing)`：ScrollView 铺满整张卡片，✕ 与
+        // 「更多」用叠层固定在角落。结果是「更多」落在 ScrollView 的 frame **之内**、
+        // 滚动内容 **之外** —— XCUITest 对这一点做命中测试时命中的是 ScrollView 自己
+        // 而不是按钮，四个用例齐刷刷报「「更多」按钮存在但不可点」（几何证据：
+        // 卡片 {{26,196},{190,246}}、卡内 ScrollView frame 与卡片完全重合、
+        // 卡内内容高仅 104.7，而「更多」在 y=400.3；同一层里落在内容区内的 ✕ 则可点）。
+        //
+        // 改成兄弟节点后，滚动区只占卡片上半段，「更多」的矩形与滚动区**不重叠**，
+        // 点击必然落在按钮上。视觉位置与原来一致（按钮仍贴在卡片底部、✕ 仍在右上角）。
+        VStack(spacing: 0) {
+            ZStack(alignment: .topTrailing) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(course.name)
+                            .font(.system(size: titleSize, weight: .semibold))
+                            .foregroundColor(.white)
+                            .lineLimit(3)
+                            .minimumScaleFactor(0.8)
+                            .padding(.trailing, 26)
 
-                    if let locationLine {
-                        detailRow(systemImage: "mappin.and.ellipse", text: locationLine)
+                        if let locationLine {
+                            detailRow(systemImage: "mappin.and.ellipse", text: locationLine)
+                        }
+                        if showsTeacher, !course.teacher.isEmpty {
+                            detailRow(systemImage: "person", text: course.teacher)
+                        }
+                        if showsTime, !timeRangeText.isEmpty {
+                            detailRow(systemImage: "clock", text: timeRangeText)
+                        }
                     }
-                    if showsTeacher, !course.teacher.isEmpty {
-                        detailRow(systemImage: "person", text: course.teacher)
-                    }
-                    if showsTime, !timeRangeText.isEmpty {
-                        detailRow(systemImage: "clock", text: timeRangeText)
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 12)
+                    .padding(.bottom, 12)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.top, 12)
-                .padding(.bottom, 54)
-            }
 
-            // ✕：右上角固定，不随内容滚动。
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.white.opacity(0.9))
-                    .frame(width: 24, height: 24)
-                    .background(Circle().fill(Color.black.opacity(0.18)))
-            }
-            .padding(8)
-            .accessibilityLabel("收起")
-            .accessibilityIdentifier("overlay.button.dismiss")
-
-            // 「更多」：固定在卡片底部，永远可点（不放在 ScrollView 里，
-            // 免得内容超高时按钮被顶出可视区）。
-            VStack {
-                Spacer(minLength: 0)
-                Button {
-                    onMore(course)
-                } label: {
-                    Text("更多")
-                        .font(Theme.detailBodyFont.weight(.medium))
-                        .foregroundColor(.white.opacity(0.95))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.black.opacity(0.16))
-                        )
+                // ✕：右上角固定，不随内容滚动。
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white.opacity(0.9))
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.black.opacity(0.18)))
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 10)
-                .accessibilityIdentifier("overlay.button.more")
+                .padding(8)
+                .accessibilityLabel("收起")
+                .accessibilityIdentifier("overlay.button.dismiss")
             }
+            // 滚动区吃掉卡片剩下的全部高度；「更多」按自身高度贴在它下面。
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // 「更多」：卡片底部独立的一行，**不在**上面的 ScrollView 里，
+            // 所以内容再长也不会把它顶出可视区，命中区域也不会被滚动区盖住。
+            Button {
+                onMore(course)
+            } label: {
+                Text("更多")
+                    .font(Theme.detailBodyFont.weight(.medium))
+                    .foregroundColor(.white.opacity(0.95))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.black.opacity(0.16))
+                    )
+            }
+            // 命中区域就是按钮自己的矩形（含底色那一段），避免再出现「可看不可点」。
+            .contentShape(Rectangle())
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
+            .accessibilityIdentifier("overlay.button.more")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
