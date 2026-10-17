@@ -48,6 +48,18 @@ import Foundation
 /// `hasImportedBefore` 这个可注入的查询闭包作为接缝（默认 `{ false }`），
 /// 供上层 sync 层按自己的持久化状态判断。详见 `docs/recon/notes-jwxt-implementation.md`。
 ///
+/// ## Cookie 传递（必须逐跳携带）
+///
+/// 原版每一跳都显式 `.cookies(map)`（`login$2.java:145`、`:158`、`:199`、`:247`、`:285`、
+/// `:321`），把上一跳累积到的 Cookie（尤其 `GET /` 播种出来的 `JSESSIONID`）带给下一跳；
+/// 强智的 `POST /Logon.do?method=logon&flag=sess` 与登录 POST 都**依赖**该 JSESSIONID
+/// 才能工作。因此本实现的每一跳都走 `JwxtSession.RequestOptions` 的默认值
+/// （`carriesCookies == true`，由 `JwxtSession.send` 往请求里写 `Cookie` 头）。
+///
+/// ⚠️ 早期版本这 6 处写成 `carriesCookies: false`（既不发 Cookie、只靠方法尾部手工
+/// `mergeCookies` 回写），会导致真机上第二跳拿不到 `JSESSIONID`、登录整体失败。
+/// 现已改为默认携带，与 Android 逐跳 `.cookies(map)` 对齐。
+///
 /// ## 未发现的流程（不得发明）
 ///
 /// - **验证码（captcha）**：反编译源码与 recon doc 中**没有任何**验证码字段、图片验证或
@@ -183,7 +195,7 @@ public final class JwxtLoginClient: @unchecked Sendable {
         do {
             let seed = try await session.send(
                 seedURL,
-                options: JwxtSession.RequestOptions(method: "GET", headers: [:], carriesCookies: false)
+                options: JwxtSession.RequestOptions(method: "GET", headers: [:])
             )
             seedCookies = seed.cookies
         } catch {
@@ -198,7 +210,7 @@ public final class JwxtLoginClient: @unchecked Sendable {
         do {
             let keyResponse = try await session.send(
                 sessionKeyURL,
-                options: JwxtSession.RequestOptions(method: "POST", headers: [:], carriesCookies: false)
+                options: JwxtSession.RequestOptions(method: "POST", headers: [:])
             )
             keyBody = keyResponse.body
             for (name, value) in keyResponse.cookies { accumulated[name] = value }
@@ -238,8 +250,7 @@ public final class JwxtLoginClient: @unchecked Sendable {
                         // :199 的 header("Referer", str4)；str4 == secureBaseUrl + "/"
                         "Referer": seedURL,
                         "Content-Type": JwxtLoginClient.formURLEncoded,
-                    ],
-                    carriesCookies: false
+                    ]
                 )
             )
         } catch {
@@ -322,8 +333,7 @@ public final class JwxtLoginClient: @unchecked Sendable {
                     headers: [
                         "Referer": referer,
                         "User-Agent": JwxtSession.userAgent,
-                    ],
-                    carriesCookies: false
+                    ]
                 )
             )
             for (name, value) in main.cookies { cookies[name] = value }
@@ -361,7 +371,7 @@ public final class JwxtLoginClient: @unchecked Sendable {
         do {
             let main = try await session.send(
                 mainURL,
-                options: JwxtSession.RequestOptions(method: "GET", headers: [:], carriesCookies: false)
+                options: JwxtSession.RequestOptions(method: "GET", headers: [:])
             )
             session.mergeCookies(working)
             for (name, value) in main.cookies { session.mergeCookies([name: value]) }
@@ -404,8 +414,7 @@ public final class JwxtLoginClient: @unchecked Sendable {
                 gatewayURL.absoluteString,
                 options: JwxtSession.RequestOptions(
                     method: "GET",
-                    headers: ["Referer": loginFinalURL],
-                    carriesCookies: false
+                    headers: ["Referer": loginFinalURL]
                 )
             )
             for (name, value) in response.cookies { cookies[name] = value }

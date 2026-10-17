@@ -42,6 +42,14 @@ struct SettingsView: View {
     @State private var draftAutoSync = false
     @State private var didLoadAccountDraft = false
 
+    /// 「同步课表」的进行中状态与最近一次结果文案。
+    ///
+    /// 文案逐字取自原版手动刷新流程 `TimetableViewModel$refreshTimetable$1.java`：
+    /// 未配置账号 `:102`、异常 `:84`、抓不到 `:147`；成功文案取自动同步通知
+    /// `TimetableAutoRefreshNotifier.java:81`（「已从教务系统覆盖本地课表，共 N 门课程。」）。
+    @State private var isSyncingTimetable = false
+    @State private var syncStatusText = ""
+
     /// 背景图：相册选择器与手动地址输入。
     @State private var showingPhotoPicker = false
     @State private var photoItem: PhotosPickerItem?
@@ -57,6 +65,7 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            syncSection
             accountSection
             semesterEntrySection
             displayOptionsSection
@@ -72,6 +81,84 @@ struct SettingsView: View {
         }
         .alert(item: $notice) { item in
             Alert(title: Text("提示"), message: Text(item.text), dismissButton: .default(Text("好")))
+        }
+    }
+
+    // MARK: - ⓿ 同步课表（设置最顶端）
+
+    /// 手动同步入口：登录教务系统 → 抓取课表 → 覆盖本地课程。
+    ///
+    /// 与安卓端的同一套流程对齐（`JwxtTimetableSync.fetchFromJwxt` +
+    /// `TimetableViewModel$refreshTimetable$1.java`）：
+    /// 1. 先落地「账号与教务系统」的草稿（URL / 用户名 / 密码），否则用户改完账号
+    ///    不点保存就同步会用到旧凭证；
+    /// 2. 用户名或密码为空 → 直接提示「请先在设置中配置教务系统账号」（`:102`，不发起请求）；
+    /// 3. `JwxtTimetableSync.fetchFromJwxt` → 非空则整体替换本地课程
+    ///    （等价 `:131-134` 的 `_courses.value = list` + `saveCourses(list)`）；
+    ///    为空则**保留**本地课程并提示「未获取到课表数据」（`:147`）；
+    /// 4. 失败提示「刷新失败: <原因>」（`:84`）。
+    private var syncSection: some View {
+        Section {
+            Button {
+                Task { await syncTimetable() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("刷新课表")
+                    Spacer(minLength: 8)
+                    if isSyncingTimetable {
+                        ProgressView()
+                    }
+                }
+            }
+            .disabled(isSyncingTimetable)
+
+            if !syncStatusText.isEmpty {
+                Text(syncStatusText)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("同步课表")
+        } footer: {
+            Text(
+                "点「刷新课表」会用下面「账号与教务系统」里已保存的 URL、用户名、密码"
+                + "登录教务系统，再抓取课表并整体覆盖本地课程（抓不到时不会清空已有课表）。"
+                + "与安卓端「刷新课表」是同一套流程。"
+            )
+        }
+    }
+
+    /// 执行一次同步。所有状态变化都发生在主线程（`Task` 继承 SwiftUI 的 MainActor）。
+    @MainActor
+    private func syncTimetable() async {
+        // 先把草稿落地：用户很可能刚改完账号就直接点同步。
+        persistAccountDraft()
+
+        let credentials = store.credentials
+        guard !credentials.username.isEmpty, !credentials.password.isEmpty else {
+            syncStatusText = "请先在设置中配置教务系统账号"
+            notice = Notice(text: syncStatusText)
+            return
+        }
+
+        isSyncingTimetable = true
+        syncStatusText = "正在登录教务系统并抓取课表…"
+        defer { isSyncingTimetable = false }
+
+        do {
+            let courses = try await JwxtTimetableSync().fetchFromJwxt(credentials: credentials)
+            if courses.isEmpty {
+                syncStatusText = "未获取到课表数据"
+                notice = Notice(text: "未获取到课表数据；已保留本地原有课程。")
+            } else {
+                store.replaceAllCourses(with: courses)
+                syncStatusText = "已从教务系统覆盖本地课表，共 \(courses.count) 门课程。"
+                notice = Notice(text: syncStatusText)
+            }
+        } catch {
+            syncStatusText = "刷新失败: \(error.localizedDescription)"
+            notice = Notice(text: syncStatusText)
         }
     }
 
@@ -105,7 +192,10 @@ struct SettingsView: View {
         }
     }
 
-    private func saveAccountSettings() {
+    /// 把账号与同步草稿落地（原版也是 pending 态，点保存才写；`SettingsScreenKt.java:4675-4676`）。
+    ///
+    /// 拆出来是因为「刷新课表」也要先落地草稿才能用上用户刚改的账号。
+    private func persistAccountDraft() {
         let jwxtUrl = draftJwxtUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         store.saveCredentials(
             UserCredentials(
@@ -116,6 +206,10 @@ struct SettingsView: View {
             )
         )
         store.mutateSettings { $0.autoSyncTimetableFromJwxt = draftAutoSync }
+    }
+
+    private func saveAccountSettings() {
+        persistAccountDraft()
         notice = Notice(text: "设置已保存")
     }
 
