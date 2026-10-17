@@ -254,9 +254,26 @@ struct TimetableView: View {
         }
     }
 
+    /// 收起浮层。
+    ///
+    /// ⚠️ 这里**必须**在收起动画跑完之后真的把 `expansion` 置 nil，不能只把
+    /// `progress` 动回 0。原因是 `CourseDetailOverlay` 的压暗层用了
+    /// `.contentShape(Rectangle())` + `.onTapGesture`：`progress` 到 0 之后卡片只是
+    /// `opacity 0`（仍然可命中），那一层压暗背景同样还留在视图树里 ——
+    /// 结果是浮层永远收不回去，而且**课表上的每一次点击都会被它吃掉**。
+    /// （CI 里 `testTappingCourseCardOpensAndDismissesDetailOverlay` 点「收起」后
+    /// `overlay.button.more` 一直 `exists == 1`，就是这个缺陷的直接证据。）
     private func dismiss() {
         guard expansion != nil else { return }
-        animateProgress(to: 0, animation: Self.collapseAnimation)
+        withAnimation(Self.collapseAnimation, completionCriteria: .logicallyComplete) {
+            expansion?.progress = 0
+        } completion: {
+            // 动画结束回调可能在下一轮 runloop 才跑，这里再确认一次当前进度，
+            // 避免「收起动画播到一半又被点开」时把新展开的浮层误摘掉。
+            if expansion?.progress == 0 {
+                expansion = nil
+            }
+        }
     }
 
     /// 无动画取消（换周、旋转、几何失效）。
@@ -275,18 +292,19 @@ struct TimetableView: View {
         }
     }
 
-    /// 浮层用的 `progress` 绑定：写 1 = 展开，写 0 = 收起并摘除浮层。
-    /// 这样 `CourseDetailOverlay` 不必知道收起动画的时长与曲线。
+    /// 浮层用的 `progress` 绑定。
+    ///
+    /// `CourseDetailOverlay` 只**读**它（显隐、位置、圆角、阴影、不透明度全部由这个
+    /// 值插值出来），从不往回写。所以这里也只有一个诚实的 `set`。
+    ///
+    /// ⚠️ 早先这里写的是「`set` 到 0 就 `expansion = nil`」，而 `dismiss()` 只调
+    /// `animateProgress(to: 0)` 绕过 binding —— 那个 `nil` 分支永远走不到，
+    /// 浮层因此既收不回去、又永久留在视图树里吃掉课表点击（见 `dismiss()` 的说明）。
+    /// 现在摘除浮层由 `dismiss()` 的动画完成回调唯一负责，这里不再假装能做这件事。
     private var progressBinding: Binding<CGFloat> {
         Binding(
             get: { expansion?.progress ?? 0 },
-            set: { newValue in
-                if newValue == 0 {
-                    expansion = nil
-                } else {
-                    expansion?.progress = newValue
-                }
-            }
+            set: { expansion?.progress = $0 }
         )
     }
 

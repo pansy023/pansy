@@ -128,7 +128,7 @@ jobs:
         id: sim
         run: |
           set -euo pipefail
-          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          INFO=$(xcrun simctl list devices available --json | python3 -c '
           import json, sys
           data = json.load(sys.stdin)
           candidates = []
@@ -148,17 +148,27 @@ jobs:
               parts = [int(p) for p in version.split(".") if p.isdigit()]
               return parts
           candidates.sort(key=version_key)
-          newest = candidates[-1]
-          print(newest[2])
+          runtime, name, udid = candidates[-1]
+          print(f"{udid}|{name}|{runtime}")
           ')
-          if [ -z "$UDID" ]; then
+          if [ -z "$INFO" ]; then
             echo "::error::没有找到任何可用的 iPhone 模拟器设备，无法在不伪造结果的前提下运行 XCUITest。"
             xcrun simctl list devices
             exit 1
           fi
-          echo "选中的模拟器 UDID：$UDID"
-          xcrun simctl list devices | grep "$UDID" || true
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          # 输出格式是 "udid|名字|runtime"，拆开打印，方便事后核对「到底跑在哪台设备上」。
+          UDID="${INFO%%|*}"
+          REST="${INFO#*|}"
+          SIM_NAME="${REST%%|*}"
+          SIM_RUNTIME="${REST#*|}"
+          echo "选中的模拟器：$SIM_NAME（runtime=$SIM_RUNTIME，UDID=$UDID）"
+          xcrun simctl list devices available > simctl-devices.txt
+          cat simctl-devices.txt
+          {
+            echo "udid=$UDID"
+            echo "simulator_name=$SIM_NAME"
+            echo "simulator_runtime=$SIM_RUNTIME"
+          } >> "$GITHUB_OUTPUT"
 
       # 两层测试刻意**分开两步**跑：单元测试挂了也要把 XCUITest 跑完，
       # 否则「界面到底能不能用」这件事会被单元测试的失败掩盖掉。
@@ -221,8 +231,39 @@ jobs:
             fi
           done
 
+      # 失败截图单独导出来：XCUITest 把自动截图挂在 xcresult 里，Xcode 16+ 的
+      # `xcresulttool export attachments` 能把它们导成 PNG。有了这一步，
+      # 「某个按钮存在但点不到」这类问题可以直接看图定位，不必猜。
+      # 本步只负责收集证据，自身失败不影响测试判定（continue-on-error）。
+      - name: 导出失败截图与设备清单（诊断用）
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p ui-test-attachments
+          xcrun simctl list devices available > simctl-devices.txt 2>&1 || true
+          # 日志由前面的测试步骤 `tee` 落下来。万一某步根本没跑，
+          # 这里补一个说明文件，免得上传步骤因「找不到任何文件」而报错却看不到原因。
+          for f in xcodebuild-unittest.log xcodebuild-test.log; do
+            [ -f "$f" ] || echo "（该步骤没有产出日志）" > "$f"
+          done
+          for bundle in TestResults.xcresult UnitTestResults.xcresult; do
+            if [ -d "$bundle" ]; then
+              name="$(basename "$bundle" .xcresult)"
+              xcrun xcresulttool export attachments \
+                --path "$bundle" \
+                --output-path "ui-test-attachments/$name" \
+                && echo "已导出 $bundle 的附件（含失败截图）" \
+                || echo "::warning::$bundle 附件导出失败，请直接下载 xcresult 查看"
+            fi
+          done
+          ls -R ui-test-attachments | head -80
+
       # 失败也要能看到报告与失败截图（截图由 XCUITest 自动挂进 xcresult，
       # 另有用例自身的 XCTAttachment 截图）。
+      #
+      # `if-no-files-found: error`：正常情况下上面的步骤保证了日志、设备清单、
+      # 附件目录至少有一个存在；真出现「一个文件都没有」就说明本 job 连证据都没
+      # 收集到，此时宁可让本步明确报错，也不要静默地交出一个空 artifact。
       - name: 上传测试报告、日志与失败截图
         if: always()
         uses: actions/upload-artifact@v4
@@ -231,9 +272,11 @@ jobs:
           path: |
             TestResults.xcresult
             UnitTestResults.xcresult
+            ui-test-attachments
+            simctl-devices.txt
             xcodebuild-test.log
             xcodebuild-unittest.log
-          if-no-files-found: warn
+          if-no-files-found: error
 
       # 唯一判定入口：任何一层测试没通过（含「模拟器挑不到」「编译失败」），
       # 本 job 明确失败。不用 `|| true` 之类的手段把失败吞掉。

@@ -89,6 +89,12 @@ public final class TimetableStore: ObservableObject {
             { try repository.loadCredentials() },
             fallback: UserCredentials(username: "", password: "")
         )
+        // 密码侧的失败是**局部失败**：用户名 / 教务 URL 已经从 `UserDefaults` 读到并保留，
+        // 只有密码没读到。实现把原因记在 `credentialLoadWarning` 里而不是抛错，
+        // 所以这里必须单独把它并进 `lastError` —— 账号留住了，错误也不能被吞掉。
+        if let credentialWarning = repository.credentialLoadWarning {
+            problems.append("教务密码：\(credentialWarning)")
+        }
         self.uiFlags = load("界面开关", { try repository.loadUIFlags() }, fallback: .default)
         self.lastError = problems.isEmpty ? nil : problems.joined(separator: "；")
 

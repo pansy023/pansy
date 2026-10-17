@@ -561,10 +561,43 @@ final class PersistenceTests: XCTestCase {
 
         let store = makeStore(repository)
 
-        // 读凭证失败 → 出厂默认 + lastError，界面照常起得来。
+        // 钥匙串读不到 → 密码为空；账号字段本身照常读（这里盘上没有账号，所以也是空）。
+        // 关键是：App 照常起得来，而且错误没有被吞掉。
         XCTAssertEqual(store.credentials.username, "")
         XCTAssertEqual(store.credentials.password, "")
         XCTAssertNotNil(store.lastError)
+    }
+
+    /// ⭐️ 回归：密码（钥匙串）读失败**不能**把已经落盘的用户名 / 教务 URL 一起丢掉。
+    ///
+    /// 缺陷现场（修复前）：`loadCredentials()` 让钥匙串的错误整份上抛，
+    /// `TimetableStore` 只好回落成 `UserCredentials(username: "", password: "")` ——
+    /// 已经写进 `UserDefaults` 的用户名跟着被丢掉，界面表现就是
+    /// 「保存过账号，重启后用户名输入框是空的」。
+    /// CI 上的 `SettingsControlsUITests.testAccountFieldsExistAndSaveIsPersisted`
+    /// 断言 `重启后用户名没有保留`，撞的正是这里。
+    ///
+    /// 同一条用例还钉住另一半：错误**不能**因此被吞掉，`lastError` 仍须有值。
+    func testCredentialStoreFailureOnLoadKeepsUsernameButStillReportsError() {
+        userDefaults.set("uitest-account", forKey: TimetableStorageKeys.username)
+        userDefaults.set("https://jwgl.example.edu.cn", forKey: TimetableStorageKeys.jwxtUrl)
+
+        let repository = UserDefaultsTimetableRepository(
+            userDefaults: userDefaults,
+            credentialStore: ThrowingCredentialStore()
+        )
+
+        let store = makeStore(repository)
+
+        XCTAssertEqual(store.credentials.username, "uitest-account", "密码读失败把用户名一起丢了")
+        XCTAssertEqual(
+            store.credentials.jwxtUrl,
+            "https://jwgl.example.edu.cn",
+            "密码读失败把教务 URL 一起丢了"
+        )
+        XCTAssertEqual(store.credentials.password, "", "密码读不到时应为空串")
+        XCTAssertNotNil(repository.credentialLoadWarning, "密码侧的失败没有留下原因")
+        XCTAssertNotNil(store.lastError, "密码侧的失败被吞掉了：lastError 应当有值")
     }
 
     /// 钥匙串删不掉时 `clearTimetableData()` 抛错，但偏好里的课表键仍然被清掉了

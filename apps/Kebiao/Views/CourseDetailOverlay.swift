@@ -38,10 +38,19 @@ private struct FloatingCardAnimator: AnimatableModifier {
         let borderOpacity = 0.20 * p
 
         return ZStack(alignment: .topLeading) {
-            Color.clear
+            // ⚠️ 这个 `Color.clear` 只是用来把 ZStack 撑满可用空间，**绝不能参与命中测试**。
+            //
+            // 它的尺寸是**整块浮层区域**（不是卡片矩形），一旦可命中，浮层之外那片
+            // 透明的满屏区域就会呆在最上层，把落在卡片以外的所有点击全部吃掉 ——
+            // 表现就是「点空白处收起」永远没反应。
+            // 不用 `.opacity(0)` 来躲：那只是看不见，仍然可命中。
+            Color.clear.allowsHitTesting(false)
             content
                 // 用 `.frame` 把「插值出的尺寸」真正落到布局上，内容因此重新排版。
                 .frame(width: rect.width, height: rect.height)
+                // 命中区域**就是卡片自己的矩形**（不是整屏），
+                // 卡片自己吃掉点击，避免穿透到背景把浮层关掉。
+                .contentShape(Rectangle())
                 // 不透明底座：展开后卡片必须完全盖住下面网格里那张小卡片。
                 .background(
                     RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -136,8 +145,13 @@ struct CourseDetailOverlay: View {
                     target: targetRect,
                     panelColor: panelColor
                 )
-                // 卡片自己要吃掉点击，避免穿透到背景把浮层关掉。
-                .contentShape(Rectangle())
+                // ⚠️ 这里**不能**再挂 `.contentShape(Rectangle())`。
+                //
+                // `floatingCard` 返回的 ZStack 是「整块浮层区域」大小（它内部那个
+                // `Color.clear` 撑满空间），在这一层设 `contentShape` 等于把**整个屏幕**
+                // 都变成这张卡片的命中区域 —— 那么点卡片外面就永远打不到压暗层，
+                // 「点空白处收起」直接失效。卡片的命中区域现在由 `floatingCard`
+                // 内部按**卡片矩形**设置（见 `FloatingCardAnimator.body`）。
         }
         // 浮层的出现没有自己的过渡：显隐完全由 `progress` 驱动
         // （progress → 0 时卡片缩回原卡片大小并淡出）。

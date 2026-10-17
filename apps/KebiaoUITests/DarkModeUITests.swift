@@ -59,7 +59,10 @@ final class DarkModeUITests: KebiaoUITestCase {
         XCTAssertTrue(toggle.waitForExistence(timeout: defaultTimeout), "设置页找不到深色模式开关")
         let original = isOn(toggle)
 
-        if isOn(toggle) { tapToggle(toggle) }
+        // ⚠️ 归一化方向写反过一次：原来写的是 `if isOn(toggle)` —— 那是在「本来就开着」
+        // 的时候把它**关掉**，紧接着又断言 value == "1"，用例结构上就不可能通过
+        // （只在开关碰巧已经打开时才蒙对）。要验「打开后能持久化」，就得先确保它是开的。
+        if !isOn(toggle) { tapToggle(toggle) }
         XCTAssertTrue(waitForValue(toggle, "1"), "无法打开深色模式")
 
         app.terminate()

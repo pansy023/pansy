@@ -36,6 +36,20 @@ public protocol TimetableRepository: AnyObject {
     func loadCredentials() throws -> UserCredentials
     func saveCredentials(_ credentials: UserCredentials) throws
 
+    /// 上一次 `loadCredentials()` 里**密码那一部分**的失败原因；没有失败时为 `nil`。
+    ///
+    /// 为什么需要它：凭证的两半分住在两个不同的存储里 —— 用户名 / 教务 URL 在
+    /// `UserDefaults`（读得到就是读得到），密码在 Keychain（iOS 模拟器上可能因为
+    /// 缺 `keychain-access-groups` 能力而整体报错）。
+    ///
+    /// 早先 `loadCredentials()` 在密码读失败时**整份抛掉**，`TimetableStore` 只好回落成
+    /// 全空的 `UserCredentials`，于是**已经落盘的用户名一起被丢掉**：界面上就是
+    /// 「明明保存过账号，重启后用户名输入框变空」。
+    ///
+    /// 现在改成：账号字段照常返回，密码侧的失败记在这个属性里由调用方并进 `lastError`
+    /// —— 既保住账号，又不吞掉错误。默认实现返回 `nil`。
+    var credentialLoadWarning: String? { get }
+
     // MARK: 界面开关
 
     func loadUIFlags() throws -> UIFlags
@@ -62,6 +76,11 @@ public protocol TimetableRepository: AnyObject {
     /// 对应 Android 端 `LocalStorage.clearAll()`：清空课表相关的全部键
     /// （课程、设置、作息方案、提醒记录），**不动**日志（`log_prefs`）。
     func clearTimetableData() throws
+}
+
+public extension TimetableRepository {
+    /// 默认「没有密码侧失败」。测试替身 / 内存实现不必关心这件事。
+    var credentialLoadWarning: String? { nil }
 }
 
 /// 与 `kebiaocom.example.ui.theme.ThemeMode` / `OptimizeMode` 对应的两个开关。

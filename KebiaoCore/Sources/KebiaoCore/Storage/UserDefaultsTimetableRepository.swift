@@ -234,6 +234,11 @@ public final class UserDefaultsTimetableRepository: TimetableRepository {
     /// 密码的去处。默认钥匙串；测试用内存实现。
     private let credentialStore: CredentialStore
 
+    /// 上一次 `loadCredentials()` 里密码侧的失败原因。见
+    /// `TimetableRepository.credentialLoadWarning` 的说明：它只报告「密码读不到」，
+    /// 不改变「账号字段照常返回」这件事。每次读取都会重置。
+    public private(set) var credentialLoadWarning: String?
+
     // MARK: 初始化
 
     public init(
@@ -498,6 +503,14 @@ public final class UserDefaultsTimetableRepository: TimetableRepository {
     ///   仅当钥匙串里没有、而偏好里存在 Android 时代遗留的明文时才回退读取，
     ///   并立刻迁移进钥匙串 + 删掉明文键。
     /// - `id`：原版不持久化（`LocalStorage.java:59` 硬编码 1），这里取 `UserCredentials` 的默认 1。
+    ///
+    /// - Important: **密码读失败不再牵连账号。** 早先这里让
+    ///   `loadPasswordWithLegacyMigration()` 的错误直接上抛，整个函数抛掉之后
+    ///   `TimetableStore` 回落成全空的 `UserCredentials`，**已经落盘的 `username` /
+    ///   `jwxtUrl` 一起被丢掉**（界面表现：保存过账号，重启后用户名输入框是空的，
+    ///   CI 上 `SettingsControlsUITests.testAccountFieldsExistAndSaveIsPersisted` 就撞在这里）。
+    ///   现在只把密码置空、把原因记进 `credentialLoadWarning`，账号字段照常返回；
+    ///   调用方（`TimetableStore`）再把它并进 `lastError`，不会把错误吞掉。
     public func loadCredentials() throws -> UserCredentials {
         var credentials = UserCredentials(username: "", password: "")
 
@@ -508,7 +521,13 @@ public final class UserDefaultsTimetableRepository: TimetableRepository {
         // 这里取 `UserCredentials` 的默认值，同样是 1。
         credentials.id = UserCredentials(username: "", password: "").id
 
-        credentials.password = try loadPasswordWithLegacyMigration()
+        do {
+            credentials.password = try loadPasswordWithLegacyMigration()
+            credentialLoadWarning = nil
+        } catch {
+            credentials.password = ""
+            credentialLoadWarning = StorageDecodingReport.describe(error)
+        }
         return credentials
     }
 

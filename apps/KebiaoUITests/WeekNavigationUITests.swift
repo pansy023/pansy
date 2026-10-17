@@ -32,6 +32,16 @@ final class WeekNavigationUITests: KebiaoUITestCase {
 
         // ② 下一周：徽标必须真的跟着变。这条在修好「状态不刷新」之前**必失败**，
         //    正是用户报的「按钮点了没反应」。
+        //
+        // ⚠️ 动手之前必须先用「回到本周」把 `weekOffset` 归零。
+        //    ① 里 `prev.tap()` 已经把偏移压到 -1（徽标仍显示第 1 周，因为
+        //    `displayedWeek = max(currentWeek + offset, 1)` 夹住了下界）。
+        //    此时直接点「下一周」只是把 -1 加回 0，显示周次还是当前教学周，
+        //    徽标**结构上不可能变化** —— 那会是测试自己的编排错，不是 App 的缺陷。
+        XCTAssertTrue(back.isEnabled, "周次被压到下界后「回到本周」应当可点")
+        back.tap()
+        XCTAssertFalse(back.isEnabled, "点「回到本周」后没有回到本周（偏移没有归零）")
+
         let week1 = weekBadge.label
         next.tap()
         XCTAssertTrue(
@@ -41,7 +51,7 @@ final class WeekNavigationUITests: KebiaoUITestCase {
         let week2 = weekBadge.label
         XCTAssertNotEqual(week2, week1, "「下一周」翻出来的周次和上一周一模一样")
 
-        // ③ 上一周：回到第 1 周。
+        // ③ 上一周：从「下一周」的位置退回本周（也就是 ② 开始时的那个周次）。
         prev.tap()
         XCTAssertTrue(
             waitForLabelToBecome(weekBadge, week1),
@@ -120,7 +130,11 @@ final class WeekNavigationUITests: KebiaoUITestCase {
         dismiss.tap()
         XCTAssertTrue(
             waitForDisappearance(app.buttons["overlay.button.more"]),
-            "点「收起」后浮层没有收回去"
+            """
+            点「收起」后浮层没有收回去。
+            dismiss.exists = \(dismiss.exists)，more.frame = \(app.buttons["overlay.button.more"].frame)
+            浮层不摘掉会永久留在视图树里，把课表上的点击全部吃掉。
+            """
         )
 
         // 收尾：删掉测试课程。

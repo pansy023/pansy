@@ -61,9 +61,10 @@ final class SettingsControlsUITests: KebiaoUITestCase {
 
         for id in Self.sliderIDs {
             let slider = app.sliders[id]
-            XCTAssertTrue(slider.waitForExistence(timeout: defaultTimeout), "设置页找不到滑动条 \(id)")
-            scrollUntilHittable(slider)
-            XCTAssertTrue(slider.isHittable, "滑动条 \(id) 不可点")
+            // ⚠️ 滑动条在 `Form` 的首屏之下，屏幕外的行**不进无障碍层级**，
+            // 所以必须先滚动把它翻出来再断言。原来这里是裸 `waitForExistence`，
+            // 只会等到超时 —— 那是测试编排的问题，不是滑动条坏了。
+            waitForHittable(slider, "设置页找不到可点的滑动条 \(id)")
 
             let valueLabel = app.staticTexts["\(id).value"]
             XCTAssertTrue(
@@ -234,11 +235,15 @@ final class SettingsControlsUITests: KebiaoUITestCase {
         openSettings()
 
         let field = app.textFields["settings.field.imageAddress"]
-        XCTAssertTrue(field.waitForExistence(timeout: defaultTimeout), "找不到「手动输入图片地址」输入框")
-        scrollUntilHittable(field)
+        // 这两个控件都在 `Form` 的显示与样式区块里，位于首屏之下 ——
+        // 必须先滚动把它们翻出来，裸 `waitForExistence` 只会等到超时。
+        waitForHittable(field, "找不到「手动输入图片地址」输入框")
 
         let applyButton = app.buttons["settings.button.applyImageAddress"]
-        XCTAssertTrue(applyButton.exists, "找不到「应用图片地址」按钮")
+        XCTAssertTrue(
+            scrollToExistence(applyButton, maxSwipes: 8),
+            "滚动后仍找不到「应用图片地址」按钮"
+        )
         XCTAssertFalse(applyButton.isEnabled, "地址为空时「应用图片地址」不该可点")
 
         field.tap()

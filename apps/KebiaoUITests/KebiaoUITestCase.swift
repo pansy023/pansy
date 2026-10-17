@@ -163,6 +163,10 @@ class KebiaoUITestCase: XCTestCase {
     // MARK: - 滚动
 
     /// 元素已存在但不在可视区时，来回滚动把它带到可点位置。
+    ///
+    /// ⚠️ 它**只在元素已经存在时**有用：`SwiftUI` 的 `Form` / `List` 是懒实体化的，
+    /// 屏幕外的行根本不进无障碍层级，所以对这类元素直接调用本方法会立刻返回、
+    /// 什么也不做。要「翻到屏幕外的控件」请用 `waitForHittable(_:_:)`。
     func scrollUntilHittable(_ element: XCUIElement, maxAttempts: Int = 10) {
         guard element.exists else { return }
         var attempts = 0
@@ -177,10 +181,49 @@ class KebiaoUITestCase: XCTestCase {
         }
     }
 
-    func tapWhenHittable(_ element: XCUIElement, message: String) {
-        XCTAssertTrue(element.waitForExistence(timeout: defaultTimeout), message)
+    /// 边滚动边等元素**出现**（不要求可点）。返回它是否出现过。
+    ///
+    /// 单独抽出来的理由：`Form` / `List` 里屏幕外的行根本不进无障碍层级，
+    /// 只写 `waitForExistence` 会一直等到超时。凡是「要翻到屏幕外才看得到」的控件，
+    /// 都得先走一遍这个流程。不要求可点，是因为有些控件只需要读状态，
+    /// 例如**禁用**状态的按钮：断言的是 `isEnabled`，`isHittable` 对它语义不确定。
+    func scrollToExistence(_ element: XCUIElement, maxSwipes: Int = 12) -> Bool {
+        if element.waitForExistence(timeout: 3) { return true }
+        // 往下翻：屏幕外的行需要先滚进可视区才会进入无障碍层级。
+        for _ in 0..<maxSwipes {
+            app.swipeUp()
+            if element.exists { return true }
+        }
+        // 再往上翻：有可能一次滚过头了。
+        for _ in 0..<maxSwipes {
+            app.swipeDown()
+            if element.exists { return true }
+        }
+        return false
+    }
+
+    /// 边滚动边等元素出现**且可点**，返回该元素。
+    @discardableResult
+    func waitForHittable(
+        _ element: XCUIElement,
+        _ message: String,
+        maxSwipes: Int = 12,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> XCUIElement {
+        XCTAssertTrue(
+            scrollToExistence(element, maxSwipes: maxSwipes),
+            "\(message)（来回滚动 \(maxSwipes * 2) 次后仍未出现）",
+            file: file,
+            line: line
+        )
         scrollUntilHittable(element)
-        XCTAssertTrue(element.isHittable, "\(message)（滚动后仍不可点，可能被遮挡）")
+        XCTAssertTrue(element.isHittable, "\(message)（存在但不可点，可能被遮挡）", file: file, line: line)
+        return element
+    }
+
+    func tapWhenHittable(_ element: XCUIElement, message: String) {
+        waitForHittable(element, message)
         element.tap()
     }
 
@@ -315,12 +358,23 @@ class KebiaoUITestCase: XCTestCase {
     func openCardEditor(named name: String) {
         let target = card(name)
         XCTAssertTrue(target.waitForExistence(timeout: defaultTimeout), "主界面找不到课程卡片「\(name)」")
-        scrollUntilHittable(target)
+        waitForHittable(target, "课程卡片「\(name)」不可点")
         target.tap()
 
         let more = app.buttons["overlay.button.more"]
         XCTAssertTrue(more.waitForExistence(timeout: defaultTimeout), "点开卡片后没有出现「更多」按钮")
-        XCTAssertTrue(more.isHittable, "「更多」按钮存在但不可点")
+        // 失败时把几何与整棵无障碍树打出来。不带这段诊断，就只能猜「是被别的视图盖住了」
+        // 还是「元素自己跑到窗口外面去了」——两种情况修法完全不同。
+        XCTAssertTrue(
+            more.isHittable,
+            """
+            「更多」按钮存在但不可点。
+            more.frame = \(more.frame)
+            app.frame  = \(app.frame)
+            windows    = \(app.windows.allElementsBoundByIndex.map { $0.frame })
+            \(app.debugDescription)
+            """
+        )
         more.tap()
 
         XCTAssertTrue(
