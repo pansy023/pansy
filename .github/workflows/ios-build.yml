@@ -93,3 +93,157 @@ jobs:
           name: Kebiao-unsigned-ipa
           path: Kebiao-unsigned.ipa
           if-no-files-found: error
+
+  # ── App 单元测试 + iPhone 模拟器 XCUITest ────────────────────────
+  #
+  # 与另外两个 job 的区别（三者不能互相替代）：
+  # - `core-tests`：`swift test`，只跑纯逻辑包，不编译 App、不启动模拟器；
+  # - `app-build` ：只证明「代码能编译」，不证明「界面能用」；
+  # - 本 job      ：App 层单元测试（`@testable import Kebiao`，宿主 App 里跑）
+  #                 + 把 App 装进 iPhone 模拟器、跑 UI 用例、看真实截图。
+  #
+  # 规矩：**任一测试失败 ⇒ 本 job 失败 ⇒ 整个 workflow 失败**。
+  # 不跳过用例、不删断言、不改预期来让 CI 变绿；模拟器不可用就明确报错退出。
+  ui-tests:
+    name: App 单元测试 + iPhone 模拟器 XCUITest
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 打印 Xcode 版本与已安装的模拟器运行时
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: 安装 xcodegen
+        run: brew install xcodegen
+
+      - name: 生成 Kebiao.xcodeproj
+        run: xcodegen generate
+
+      - name: 列出可用模拟器设备
+        run: xcrun simctl list devices available
+
+      - name: 选择一台可用的 iPhone 模拟器
+        id: sim
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          candidates = []
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              for device in devices:
+                  name = device.get("name", "")
+                  if name.startswith("iPhone"):
+                      candidates.append((runtime, name, device.get("udid", "")))
+          if not candidates:
+              print("")
+              sys.exit(0)
+          def version_key(item):
+              runtime = item[0]
+              version = runtime.split("iOS-")[-1].replace("-", ".")
+              parts = [int(p) for p in version.split(".") if p.isdigit()]
+              return parts
+          candidates.sort(key=version_key)
+          newest = candidates[-1]
+          print(newest[2])
+          ')
+          if [ -z "$UDID" ]; then
+            echo "::error::没有找到任何可用的 iPhone 模拟器设备，无法在不伪造结果的前提下运行 XCUITest。"
+            xcrun simctl list devices
+            exit 1
+          fi
+          echo "选中的模拟器 UDID：$UDID"
+          xcrun simctl list devices | grep "$UDID" || true
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      # 两层测试刻意**分开两步**跑：单元测试挂了也要把 XCUITest 跑完，
+      # 否则「界面到底能不能用」这件事会被单元测试的失败掩盖掉。
+      # 两步都用 `continue-on-error: true` 记录 outcome，最后由末尾的闸门步骤
+      # 统一让本 job（进而整个 workflow）明确失败 —— 不静默跳过、不把失败算成通过。
+      - name: 运行 App 层单元测试（XCTest，宿主 Kebiao.app）
+        id: unit_tests
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          rm -rf UnitTestResults.xcresult
+          xcodebuild test \
+            -project Kebiao.xcodeproj \
+            -scheme Kebiao \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build \
+            -resultBundlePath UnitTestResults.xcresult \
+            -only-testing:KebiaoTests \
+            -enableCodeCoverage NO \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            2>&1 | tee xcodebuild-unittest.log
+
+      - name: 运行 XCUITest（真启动 App 与模拟器）
+        id: ui_tests
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          rm -rf TestResults.xcresult
+          xcodebuild test \
+            -project Kebiao.xcodeproj \
+            -scheme Kebiao \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build \
+            -resultBundlePath TestResults.xcresult \
+            -only-testing:KebiaoUITests \
+            -enableCodeCoverage NO \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            2>&1 | tee xcodebuild-test.log
+
+      - name: 汇总测试结果
+        if: always()
+        run: |
+          echo "单元测试步骤结果：${{ steps.unit_tests.outcome }}"
+          echo "XCUITest 步骤结果：${{ steps.ui_tests.outcome }}"
+          for bundle in UnitTestResults.xcresult TestResults.xcresult; do
+            if [ -d "$bundle" ]; then
+              echo "──────── $bundle ────────"
+              xcrun xcresulttool get test-results summary --path "$bundle" \
+                || echo "（无法解析 $bundle 的 summary，请下载 artifact 查看）"
+            else
+              echo "::warning::没有生成 $bundle，该层测试没有产出报告"
+            fi
+          done
+
+      # 失败也要能看到报告与失败截图（截图由 XCUITest 自动挂进 xcresult，
+      # 另有用例自身的 XCTAttachment 截图）。
+      - name: 上传测试报告、日志与失败截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kebiao-uitest-results
+          path: |
+            TestResults.xcresult
+            UnitTestResults.xcresult
+            xcodebuild-test.log
+            xcodebuild-unittest.log
+          if-no-files-found: warn
+
+      # 唯一判定入口：任何一层测试没通过（含「模拟器挑不到」「编译失败」），
+      # 本 job 明确失败。不用 `|| true` 之类的手段把失败吞掉。
+      - name: 测试未全部通过即让工作流失败
+        if: always()
+        run: |
+          UNIT="${{ steps.unit_tests.outcome }}"
+          UI="${{ steps.ui_tests.outcome }}"
+          if [ "$UNIT" != "success" ] || [ "$UI" != "success" ]; then
+            echo "::error::测试未全部通过（App 单元测试=$UNIT，XCUITest=$UI），本 job 明确失败；报告与日志见 artifact Kebiao-uitest-results。"
+            exit 1
+          fi
+          echo "App 单元测试与 XCUITest 均通过。"
