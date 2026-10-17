@@ -411,23 +411,24 @@ class KebiaoUITestCase: XCTestCase {
 
         let more = app.buttons["overlay.button.more"]
         XCTAssertTrue(more.waitForExistence(timeout: defaultTimeout), "点开卡片后没有出现「更多」按钮")
-        // 失败时把几何与整棵无障碍树打出来。不带这段诊断，就只能猜「是被别的视图盖住了」
-        // 还是「元素自己跑到窗口外面去了」——两种情况修法完全不同。
-        XCTAssertTrue(
-            more.isHittable,
-            """
-            「更多」按钮存在但不可点。
-            more.frame = \(more.frame)
-            app.frame  = \(app.frame)
-            windows    = \(app.windows.allElementsBoundByIndex.map { $0.frame })
-            \(app.debugDescription)
-            """
-        )
+        // ⚠️ 这里**不再**用 `more.isHittable` 当闸门（2026-10-17 经用户批准改的）。
+        //
+        // 实测证据（CI run 39023926057）：同一张卡片、同一层的「收起」按钮是**可点的**
+        // （日志里真实合成了点击事件，随后「浮层已收起」断言通过）；「更多」的 frame
+        // 也在卡内、与滚动区零重叠（滚动区下沿 400.3，按钮上沿 400.3），失败截图里
+        // 它完整可见、无任何东西压在上面 —— 但 `isHittable` 恒为 false。
+        // 那是 XCUITest 的读数误判，不是遮挡。真正的证据在下面那句：点完之后
+        // 编辑页必须**真的出现**；按钮若真不可用，这一句照样必失败。
         more.tap()
 
         XCTAssertTrue(
             app.textFields["editor.field.name"].waitForExistence(timeout: defaultTimeout),
-            "「更多」没有打开课程编辑页"
+            """
+            「更多」没有打开课程编辑页 —— 这说明它真的不可用，而不只是 isHittable 读数误判。
+            more.exists = \(more.exists)，more.isHittable = \(more.isHittable)
+            more.frame = \(more.frame)
+            app.frame  = \(app.frame)
+            """
         )
     }
 
