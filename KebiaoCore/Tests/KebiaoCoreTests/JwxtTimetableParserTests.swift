@@ -127,12 +127,12 @@ final class JwxtTimetableParserTests: XCTestCase {
     // MARK: - 节次（recon §5.2）
 
     func testExtractPeriodRangePrefersXYJie() {
-        XCTAssertEqual(QianzhiJwxtParser.extractPeriodRange("1-16(周)[03-04节]")?.0, 3)
-        XCTAssertEqual(QianzhiJwxtParser.extractPeriodRange("1-16(周)[03-04节]")?.1, 4)
+        XCTAssertEqual(QiangzhiJwxtParser.extractPeriodRange("1-16(周)[03-04节]")?.0, 3)
+        XCTAssertEqual(QiangzhiJwxtParser.extractPeriodRange("1-16(周)[03-04节]")?.1, 4)
         // 括号写法 `[3-4节]` 同样命中。
-        XCTAssertEqual(QianzhiJwxtParser.extractPeriodRange("[3-4节]")?.0, 3)
+        XCTAssertEqual(QiangzhiJwxtParser.extractPeriodRange("[3-4节]")?.0, 3)
         // 不合法（end < start）返回 nil，交回兜底。
-        XCTAssertNil(QianzhiJwxtParser.extractPeriodRange("[4-3节]"))
+        XCTAssertNil(QiangzhiJwxtParser.extractPeriodRange("[4-3节]"))
     }
 
     // MARK: - 配色（recon §4.7、§5）
