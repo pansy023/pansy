@@ -196,6 +196,71 @@ final class JwxtTimetableParserTests: XCTestCase {
         XCTAssertEqual(QiangzhiJwxtParser.collapseAdjacentCourses([a, b]).count, 2)
     }
 
+    // MARK: - 抓课表失败必须显式报错（不再静默返回空表；文件头「有意差异 4」）
+
+    /// 登录页最小样本：含 `Logon.do?method=logon` 与 `userAccount`，且**不含**任何课表特征串。
+    /// 形状照抄实测副本（`<title>登录</title>`，HTTP 200、无 302、无 `Location`）。
+    private let loginPageHTML = """
+    <html><head><title>登录</title></head>
+    <body><form action="/Logon.do?method=logon" method="post">
+    <input name="userAccount"><input name="userPassword"><input name="encoded">
+    </form></body></html>
+    """
+
+    func testIsLoginPageDetectsLoginPageBody() {
+        // 服务端未认证时直接回 200 + 登录页：最终 URL 与 Location 都不含 Login。
+        XCTAssertTrue(QiangzhiJwxtParser.isLoginPage(
+            body: loginPageHTML,
+            finalURL: "https://jwgl.xihang.com.cn/jsxsd/xskb/xskb_list.do",
+            location: nil
+        ))
+    }
+
+    func testIsLoginPageReturnsFalseForTimetableBody() {
+        XCTAssertFalse(QiangzhiJwxtParser.isLoginPage(
+            body: doStyleHTML,
+            finalURL: "https://jwgl.xihang.com.cn/jsxsd/xskb/xskb_list.do",
+            location: nil
+        ))
+    }
+
+    /// `table#timetable` 没命中时，宽松兜底必须还能拿到课程（严格超集，不改变原结果）。
+    func testParseDoStyleRelaxedFallsBackWhenTableIDIsMissing() {
+        let html = doStyleHTML.replacingOccurrences(of: "<table id=\"timetable\">", with: "<table>")
+        XCTAssertTrue(parser.parseDoStyle(html).isEmpty)
+        XCTAssertEqual(parser.parseDoStyleRelaxed(html).count, 1)
+    }
+
+    /// 抓课表那一跳拿到登录页时，必须抛 `sessionExpired` —— 这正是真机上
+    /// 「未获取到课表数据；已保留本地原有课程。」那句误导性提示的根因。
+    func testFetchTimetableThrowsSessionExpiredInsteadOfReturningEmpty() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [JwxtStubURLProtocol.self]
+        let body = Data(loginPageHTML.utf8)
+        JwxtStubURLProtocol.setResponder { _ in (200, body) }
+        defer { JwxtStubURLProtocol.setResponder(nil) }
+
+        let stubbed = QiangzhiJwxtParser(
+            baseURL: UserCredentials.defaultJwxtUrl,
+            configuration: configuration
+        )
+        do {
+            let courses = try await stubbed.fetchTimetable()
+            XCTFail("应抛 sessionExpired，而不是静默返回空表；实际得到 \(courses.count) 门课")
+        } catch let error as JwxtFetchError {
+            guard case .sessionExpired = error else {
+                XCTFail("应为 sessionExpired，实际 \(error)")
+                return
+            }
+            XCTAssertTrue(
+                error.errorDescription?.contains("会话已失效") == true,
+                "诊断文案应说明会话失效，实际：\(error.errorDescription ?? "nil")"
+            )
+        } catch {
+            XCTFail("应为 JwxtFetchError，实际 \(error)")
+        }
+    }
+
     // MARK: - 同步层文案（`sync/JwxtTimetableSync.java:85`）
 
     func testLoginFailureMessageMatchesAndroid() {
@@ -211,4 +276,54 @@ final class JwxtTimetableParserTests: XCTestCase {
             true
         )
     }
+}
+
+/// 极简 `URLProtocol` 桩：让 `JwxtSession` 的请求拿到固定响应。
+///
+/// 用途单一 —— 锁定「抓课表拿到登录页时必须抛错、不能静默返回空表」。
+/// 本包 `swift-tools-version: 5.9`（Swift 5 语言模式），静态可变状态用 `NSLock` 保护即可。
+final class JwxtStubURLProtocol: URLProtocol {
+
+    /// `(statusCode, body)`；未设置时按 404 处理。
+    private static var responder: ((URLRequest) -> (Int, Data))?
+    private static let lock = NSLock()
+
+    static func setResponder(_ value: ((URLRequest) -> (Int, Data))?) {
+        lock.lock()
+        defer { lock.unlock() }
+        responder = value
+    }
+
+    private static func currentResponder() -> ((URLRequest) -> (Int, Data))? {
+        lock.lock()
+        defer { lock.unlock() }
+        return responder
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let responder = JwxtStubURLProtocol.currentResponder(),
+              let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        let (status, data) = responder(request)
+        guard let response = HTTPURLResponse(
+            url: url,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/html; charset=utf-8"]
+        ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

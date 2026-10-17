@@ -23,6 +23,17 @@ import Foundation
 ///    `kotlinTrim` / `isBlank` 两个显式排除 NBSP 的实现。
 /// 3. **风格 B 的两处 jadx 反编译错乱**（recon doc §11 第 7 条明确「不要照抄」）：
 ///    见 `parseWakeUpStyle` 内的 `有意差异` 注释。
+/// 4. **抓课表失败时抛 `JwxtFetchError`，不再静默返回空表**（`fetchTimetable`）：
+///    Android 原版在两种情况下**返回空数组** —— 会话失效（`:104-111`）与两种风格都没命中
+///    （`:112-125`）。调用方无法区分「这学期真的没课」与「抓取失败」，真机上表现为
+///    设置页弹一句「未获取到课表数据；已保留本地原有课程。」，排查时毫无线索。
+///    实测（2026-10）已证明 iOS 上原版判据是**死代码**：未认证时服务端对
+///    `GET /jsxsd/xskb/xskb_list.do` 直接返回 **200 + 登录页**（`<title>登录</title>`，
+///    无 302、无 `Location`），但判据是「最终 URL 或 `Location` 含 `Login`」→ 永不命中
+///    → 会话失效被静默吞掉。因此 iOS 侧改为**显式抛错并附带证据串**
+///    （status / title / len / 特征串），让失败原因可读、可修。
+///    另新增 `parseDoStyleRelaxed` 兜底：`table#timetable` 没命中时再遍历所有 `table`，
+///    属严格超集（只在原版结果为空时才启用），用于页面结构漂移时的自愈。
 public final class QiangzhiJwxtParser: @unchecked Sendable {
 
     /// 与原版 `TAG` 一致的日志标签（`:61`）。
@@ -62,13 +73,13 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
 
     /// 拉取并解析课表。
     ///
-    /// 完整行为（逐条对齐 `QiangzhiJwxtParser$fetchTimetable$2.java`）：
+    /// 完整行为（逐条对齐 `QiangzhiJwxtParser$fetchTimetable$2.java`，最后一处为有意差异）：
     /// 1. `GET {secureBaseUrl}/jsxsd/xskb/xskb_list.do`，Referer =
     ///    `timetableReferer ?? {base}/jsxsd/framework/xsMainV.htmlx`，带登录后累积的 Cookie；
-    /// 2. 会话过期（最终 URL 或 `Location` 含 `Login`）→ 返回空表、不自动重登
-    ///    （`:104-110` 的 `statusCode == 302 && location 含 Login`，recon doc §1.4 已说明
-    ///    iOS 的 `URLSession` 会把 302 跟随掉，所以这里按最终 URL / Location 判定）；
-    /// 3. 先 `parseDoStyle`，空则 `parseWakeUpStyle`，仍空返回空表（`:112-125`）；
+    /// 2. **会话失效判定改为基于正文**（见文件头「有意差异 4」）→ 抛
+    ///    `JwxtFetchError.sessionExpired`；
+    /// 3. 先 `parseDoStyle`，空则 `parseDoStyleRelaxed`（新增兜底），再空则 `parseWakeUpStyle`；
+    ///    仍空 **抛** `JwxtFetchError.pageStructureUnsupported`（不静默返回空表）；
     /// 4. `mergeDuplicateCourses` → `collapseAdjacentCourses` → 返回后者（`:127-128`）。
     public func fetchTimetable() async throws -> [Course] {
         let url = session.secureBaseURL + QiangzhiJwxtParser.timetablePath
@@ -86,23 +97,65 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
         )
 
         let finalURL = response.finalURL?.absoluteString ?? url
-        if finalURL.contains("Login") || (response.locationHeader?.contains("Login") ?? false) {
-            log?("Session已过期，需要重新登录")
-            return []
+        let body = response.body
+
+        // 会话失效：**按正文判定**，只信最终 URL / Location 会漏（文件头「有意差异 4」）。
+        if QiangzhiJwxtParser.isLoginPage(
+            body: body,
+            finalURL: finalURL,
+            location: response.locationHeader
+        ) {
+            log?("Session已过期，需要重新登录（服务端直接返回登录页，未重定向）")
+            throw JwxtFetchError.sessionExpired(diagnostic: QiangzhiJwxtParser.diagnose(response))
         }
 
-        let body = response.body
         var parsed = parseDoStyle(body)
-        if parsed.isEmpty {
-            parsed = parseWakeUpStyle(body)
-        }
-        if parsed.isEmpty {
-            log?("未命中可用课表解析规则，返回空课表")
-            return []
+        if parsed.isEmpty { parsed = parseDoStyleRelaxed(body) }
+        if parsed.isEmpty { parsed = parseWakeUpStyle(body) }
+        guard !parsed.isEmpty else {
+            log?("未命中可用课表解析规则")
+            throw JwxtFetchError.pageStructureUnsupported(
+                diagnostic: QiangzhiJwxtParser.diagnose(response)
+            )
         }
         return QiangzhiJwxtParser.collapseAdjacentCourses(
             QiangzhiJwxtParser.mergeDuplicateCourses(parsed)
         )
+    }
+
+    // MARK: - 抓取失败判定与诊断（文件头「有意差异 4」）
+
+    /// 判定「抓课表那一跳拿到的是登录页」。
+    ///
+    /// 实测（2026-10）：未认证时 `GET /jsxsd/xskb/xskb_list.do` 返回 **HTTP 200 + 登录页**，
+    /// 无 302、无 `Location`；`/jsxsd/framework/xsMainV.htmlx` 同样。因此原版
+    /// 「302 且 `Location` 含 `Login`」的判据在 iOS 上**永不命中**，必须补上基于正文的判据。
+    static func isLoginPage(body: String, finalURL: String, location: String?) -> Bool {
+        if finalURL.contains("Login") { return true }
+        if let location, location.contains("Login") { return true }
+        // 真正课表页的特征（任一命中即认为不是登录页）。
+        let hasTimetableMarkers = body.contains("id=\"timetable\"")
+            || body.contains("id='timetable'")
+            || body.contains("Table1")
+            || body.contains("kbcontent")
+        guard !hasTimetableMarkers else { return false }
+        // 登录页特征：登录表单动作或账号输入框名。
+        return body.contains("Logon.do?method=logon") || body.contains("userAccount")
+    }
+
+    /// 一次失败抓取的证据串（拼进错误文案与日志，避免再次出现「无 clue」的失败）。
+    static func diagnose(_ response: JwxtSession.Response) -> String {
+        let title = JwxtHTML.title(response.body)
+        let hasTimetableId = response.body.contains("id=\"timetable\"")
+            || response.body.contains("id='timetable'")
+        let hasTable1 = response.body.contains("Table1")
+        let hasKbcontent = response.body.contains("kbcontent")
+        return "status=\(response.statusCode)"
+            + " title=\(title.isEmpty ? "(无)" : title)"
+            + " len=\(response.body.count)"
+            + " hasTimetableId=\(hasTimetableId)"
+            + " hasTable1=\(hasTable1)"
+            + " hasKbcontent=\(hasKbcontent)"
     }
 
     // MARK: - 风格 A：parseDoStyle（recon doc §4.3）
@@ -118,6 +171,28 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
     public func parseDoStyle(_ html: String) -> [Course] {
         let document = JwxtHTMLDocument.parse(html)
         guard let table = document.selectFirst("table#timetable") else { return [] }
+        return parseDoStyleTable(table, in: document)
+    }
+
+    /// **宽松兜底**（文件头「有意差异 4」）：`table#timetable` 没命中时，遍历文档里**所有**
+    /// `table`，返回第一个能解析出课程的结果。
+    ///
+    /// 这是 `parseDoStyle` 的**严格超集** —— 只在原版选择器返回空时才被调用，
+    /// 因此不可能改变任何原本能解析成功的结果；唯一作用是页面结构漂移
+    /// （如 `id="timetable"` 改名、或课表被包进另一张表）时仍能拿到课程。
+    public func parseDoStyleRelaxed(_ html: String) -> [Course] {
+        let document = JwxtHTMLDocument.parse(html)
+        for table in document.select("table") {
+            let courses = parseDoStyleTable(table, in: document)
+            if !courses.isEmpty { return courses }
+        }
+        return []
+    }
+
+    /// 单张表格的 DO 风格解析主体（`QiangzhiJwxtParser.java:169-227`）。
+    ///
+    /// 从 `parseDoStyle` 里原样拆出，供严格选择器与宽松兜底共用，避免两份实现漂移。
+    private func parseDoStyleTable(_ table: JwxtHTMLNode, in document: JwxtHTMLDocument) -> [Course] {
         let rows = document.select("tr", from: table)
         guard !rows.isEmpty else { return [] }
 
@@ -861,5 +936,27 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
         }
         out.append(String(value[cursor...]))
         return out
+    }
+}
+
+/// 抓课表阶段的失败原因（文件头「有意差异 4」）。
+///
+/// Android 原版在这里**返回空表**（`QiangzhiJwxtParser$fetchTimetable$2.java:104-125`），
+/// 使「本学期无课」与「抓取失败」不可区分 —— 真机上就表现为那句毫无线索的
+/// 「未获取到课表数据；已保留本地原有课程。」。iOS 侧改为显式抛错并携带证据串
+/// （`diagnostic`），让失败原因可读、可修。
+public enum JwxtFetchError: Error, LocalizedError, Equatable, Sendable {
+    /// 抓课表那一跳拿到的是登录页 ⇒ 会话已失效（服务端 200 + 登录页，不是 302）。
+    case sessionExpired(diagnostic: String)
+    /// 拿到的是非登录页，但 DO 风格、宽松兜底与 WakeUp 风格都没解析出课程 ⇒ 页面结构与解析器不匹配。
+    case pageStructureUnsupported(diagnostic: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .sessionExpired(diagnostic):
+            return "教务系统会话已失效，需要重新登录（诊断：\(diagnostic)）"
+        case let .pageStructureUnsupported(diagnostic):
+            return "课表页结构无法识别（诊断：\(diagnostic)）"
+        }
     }
 }

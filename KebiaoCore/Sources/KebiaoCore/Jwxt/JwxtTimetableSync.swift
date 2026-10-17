@@ -51,14 +51,28 @@ public struct JwxtTimetableSync: @unchecked Sendable {
     /// - Parameter credentials: `jwxtUrl` 为空时回落到 `UserCredentials.defaultJwxtUrl`
     ///   （等价 `:49-51`）。
     /// - Returns: 抓到的课程，`id` 已按 `index + 1` 回填（等价 `:68-79`）。
-    ///   抓不到课表时返回**空数组**（原版 `fetchTimetable` 也是返回空表，不抛错）。
-    /// - Throws: `JwxtSyncError.loginFailed`（登录未通过）。
-    ///   抓课表时的网络/解析异常照原样抛出（原版 `fetchTimetable` 内部 catch 后返回空表，
-    ///   见 `QiangzhiJwxtParser$fetchTimetable$2.java`；iOS 侧 `fetchTimetable` 保持同语义）。
+    /// - Throws: `JwxtSyncError.loginFailed`（登录未通过）；
+    ///   `JwxtFetchError.sessionExpired` / `.pageStructureUnsupported`（抓课表那一跳失败）。
+    ///
+    /// ⚠️ **与原版刻意不同的一处**：原版抓课表失败时返回空表（`fetchTimetable` 内部吞成 `[]`），
+    /// iOS 侧 `fetchTimetable` 改为抛 `JwxtFetchError`（见该文件文件头「有意差异 4」）。
+    /// 这里额外做一次**自愈重试**：若失败原因是「会话已失效」（服务端直接回登录页、
+    /// 不重定向，原版判据在 iOS 上永不命中），就**重新走一遍完整登录**再抓一次；
+    /// 仍失败则把诊断抛给上层，让 UI 显示具体原因而不是误导性的「未获取到课表数据」。
     public func fetchFromJwxt(credentials: UserCredentials) async throws -> [Course] {
         let rawURL = credentials.jwxtUrl
         let jwxtUrl = rawURL.isEmpty ? UserCredentials.defaultJwxtUrl : rawURL
 
+        do {
+            return try await attempt(jwxtUrl: jwxtUrl, credentials: credentials)
+        } catch JwxtFetchError.sessionExpired(let diagnostic) {
+            log?("会话已失效，重新登录后再抓一次（首次诊断：\(diagnostic)）")
+            return try await attempt(jwxtUrl: jwxtUrl, credentials: credentials)
+        }
+    }
+
+    /// 一次「登录 → 抓课表」的完整尝试（每次新建 `JwxtSession`，与原版一致）。
+    private func attempt(jwxtUrl: String, credentials: UserCredentials) async throws -> [Course] {
         let session = JwxtSession(baseURL: jwxtUrl, configuration: configuration)
         let loginClient = JwxtLoginClient(session: session)
         let loginResult = await loginClient.login(
