@@ -468,13 +468,20 @@ class KebiaoUITestCase: XCTestCase {
     /// 编辑页本身也有一个「删除此课程」按钮，因此必须限定在 sheet / alert 容器内，
     /// 否则会点到那个刚点过的行按钮（那只会重新弹一次对话框，测试变成假阳性）。
     func deleteConfirmationButton() -> XCUIElement {
-        let byIdentifier = app.buttons["editor.dialog.confirmDelete"]
+        // ⚠️ 三个分支都必须 `.firstMatch`（2026-10-17 实测）：SwiftUI 的
+        // `.confirmationDialog` 会把同一颗确认按钮投影成「Button 套 Button」，
+        // 两层都带同一个 identifier —— `app.buttons["…"]` 因此命中 2 个元素，
+        // 直接 `.tap()` 会抛 `Multiple matching elements found`
+        //（CI run 39026024600 的 `Sparse tree of matches` 直接拍下了这个嵌套）。
+        // 这不是 App 缺陷（确认删除的动作只有一个），只是无障碍投影重复；
+        // `.firstMatch` 不降低强度：调用方仍然断言「弹窗必须出现」与「删除后卡片必须消失」。
+        let byIdentifier = app.buttons["editor.dialog.confirmDelete"].firstMatch
         if byIdentifier.waitForExistence(timeout: 8) { return byIdentifier }
 
-        let inSheet = app.sheets.buttons["删除此课程"]
+        let inSheet = app.sheets.buttons["删除此课程"].firstMatch
         if inSheet.waitForExistence(timeout: 8) { return inSheet }
 
-        return app.alerts.buttons["删除此课程"]
+        return app.alerts.buttons["删除此课程"].firstMatch
     }
 
     func deleteCourse(named name: String) {
