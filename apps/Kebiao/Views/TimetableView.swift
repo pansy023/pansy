@@ -15,12 +15,16 @@ private struct CourseExpansion: Equatable {
     let targetRect: CGRect
     /// 展开动画进度：0 = 网格态，1 = 展开态。**唯一的动画驱动值**。
     var progress: CGFloat
+    /// 网格里那张卡片的样式（底色 / 文字色）。展开卡**沿用同一份**，
+    /// 保证大卡片与小卡片颜色完全一致。
+    let cardStyle: CourseCardStyle
 
     static func == (lhs: CourseExpansion, rhs: CourseExpansion) -> Bool {
         lhs.course == rhs.course
             && lhs.sourceRect == rhs.sourceRect
             && lhs.targetRect == rhs.targetRect
             && lhs.progress == rhs.progress
+            && lhs.cardStyle == rhs.cardStyle
     }
 }
 
@@ -243,7 +247,8 @@ struct TimetableView: View {
             course: tap.course,
             sourceRect: tap.frameInOverlay,
             targetRect: targetRect,
-            progress: 0
+            progress: 0,
+            cardStyle: tap.style
         )
         // 先让 progress = 0 的那一帧真正渲染出来（浮层此刻还只是叠在网格卡片上的
         // 同尺寸剪影），下一轮 runloop 再动到 1。若在同一轮里既插入浮层又改 progress，
@@ -312,18 +317,16 @@ struct TimetableView: View {
 
     @ViewBuilder
     private func overlay(for expansion: CourseExpansion) -> some View {
-        // 展开卡统一用面板色打底：莫兰迪底色偏浅、白字读不清，
-        // 详情卡优先保证可读性，而不是「和网格卡片同色」。
-        let panelColor = Theme.panelColor(
-            dark: dark,
-            hasCustomBackground: settings.hasCustomBackground
-        )
+        // 展开卡沿用网格里那张小卡片**同一份**解算样式：小卡片是什么颜色，
+        // 弹出的大卡片就是什么颜色（不再是面板色 / 白色），与安卓端一致。
+        let cardStyle = expansion.cardStyle
 
         CourseDetailOverlay(
             course: expansion.course,
             sourceRect: expansion.sourceRect,
             targetRect: expansion.targetRect,
-            panelColor: panelColor,
+            cardBackground: cardStyle.background,
+            cardInk: cardStyle.ink,
             progress: progressBinding,
             showsTime: settings.showCourseTime,
             showsLocation: settings.showCourseLocation,

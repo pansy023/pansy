@@ -13,6 +13,9 @@ struct CourseCardTap {
     let frameInOverlay: CGRect
     /// 这张卡是否出现在当前显示的这一周（决定展开卡的透明度基准）。
     let occursThisWeek: Bool
+    /// 网格里这张卡解算出的样式。展开浮层**沿用同一份**底色 / 文字色，
+    /// 保证「大卡片颜色 = 小卡片颜色」；不再在浮层里重新推导，避免两处算法漂移。
+    let style: CourseCardStyle
 }
 
 /// 课表网格：表头行 + 左列节次 + 三个时间段面板。
@@ -323,13 +326,19 @@ struct TimetableGrid: View {
         let inset = Theme.cardHorizontalInset
         let cardWidth = max(dayWidth - inset * 2, 1)
 
-        return CourseCard(course: course, style: style, height: geometry.height) {
+        return CourseCard(
+            course: course,
+            style: style,
+            height: geometry.height,
+            timeRangeText: TimetableLayout.buildTimeRange(course, timeSlots: store.timeSlots)
+        ) {
             onTapCard(
                 CourseCardTap(
                     course: course,
                     frameInOverlay: cardFrames[course.id]
                         ?? CGRect(x: 0, y: 0, width: cardWidth, height: geometry.height),
-                    occursThisWeek: occurs
+                    occursThisWeek: occurs,
+                    style: style
                 )
             )
         }

@@ -16,7 +16,7 @@ private struct FloatingCardAnimator: AnimatableModifier {
     var progress: CGFloat
     let source: CGRect
     let target: CGRect
-    let panelColor: Color
+    let cardBackground: Color
 
     var animatableData: CGFloat {
         get { progress }
@@ -52,9 +52,10 @@ private struct FloatingCardAnimator: AnimatableModifier {
                 // 卡片自己吃掉点击，避免穿透到背景把浮层关掉。
                 .contentShape(Rectangle())
                 // 不透明底座：展开后卡片必须完全盖住下面网格里那张小卡片。
+                // 用的就是网格小卡片那份底色（`CourseCardStyle.background`）。
                 .background(
                     RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .fill(panelColor)
+                        .fill(cardBackground)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
                 .overlay(
@@ -80,14 +81,14 @@ private extension View {
         progress: CGFloat,
         source: CGRect,
         target: CGRect,
-        panelColor: Color
+        cardBackground: Color
     ) -> some View {
         modifier(
             FloatingCardAnimator(
                 progress: progress,
                 source: source,
                 target: target,
-                panelColor: panelColor
+                cardBackground: cardBackground
             )
         )
     }
@@ -110,8 +111,12 @@ struct CourseDetailOverlay: View {
     let sourceRect: CGRect
     /// 终点：`TimetableLayout.expandTarget` 算出的矩形（浮层坐标系）。
     let targetRect: CGRect
-    /// 卡片的配景色（展开态统一用面板色打底，保证文字对比度稳定）。
-    let panelColor: Color
+    /// 大卡片底色。**必须**与网格里那张小卡片同色
+    /// （由 `CourseCardTap.style.background` 传入），不再是面板色 / 白色。
+    let cardBackground: Color
+    /// 大卡片文字色。同样沿用网格小卡片的 ink（`CourseCardStyle.ink`），
+    /// 保证在任意底色上文字对比度与小卡片一致。
+    let cardInk: Color
     /// 展开/收回的进度：0 网格态，1 展开态。显隐由它驱动，不用 `.transition`。
     /// 写 0 表示「收起完成」，调用方据此摘掉浮层。
     @Binding var progress: CGFloat
@@ -143,7 +148,7 @@ struct CourseDetailOverlay: View {
                     progress: progress,
                     source: sourceRect,
                     target: targetRect,
-                    panelColor: panelColor
+                    cardBackground: cardBackground
                 )
                 // ⚠️ 这里**不能**再挂 `.contentShape(Rectangle())`。
                 //
@@ -177,19 +182,21 @@ struct CourseDetailOverlay: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(course.name)
                             .font(.system(size: titleSize, weight: .semibold))
-                            .foregroundColor(.white)
+                            .foregroundColor(cardInk)
                             .lineLimit(3)
                             .minimumScaleFactor(0.8)
                             .padding(.trailing, 26)
 
+                        // 与安卓端大卡片一致（参考截图二）：纯文字标签、无系统图标，
+                        // 顺序为「时间 / 地点 / 老师」。
+                        if showsTime, !timeRangeText.isEmpty {
+                            detailLine("时间 \(timeRangeText)")
+                        }
                         if let locationLine {
-                            detailRow(systemImage: "mappin.and.ellipse", text: locationLine)
+                            detailLine("地点 \(locationLine)")
                         }
                         if showsTeacher, !course.teacher.isEmpty {
-                            detailRow(systemImage: "person", text: course.teacher)
-                        }
-                        if showsTime, !timeRangeText.isEmpty {
-                            detailRow(systemImage: "clock", text: timeRangeText)
+                            detailLine("老师 \(course.teacher)")
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -202,7 +209,7 @@ struct CourseDetailOverlay: View {
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white.opacity(0.9))
+                        .foregroundColor(cardInk.opacity(0.9))
                         .frame(width: 24, height: 24)
                         .background(Circle().fill(Color.black.opacity(0.18)))
                 }
@@ -220,7 +227,7 @@ struct CourseDetailOverlay: View {
             } label: {
                 Text("更多")
                     .font(Theme.detailBodyFont.weight(.medium))
-                    .foregroundColor(.white.opacity(0.95))
+                    .foregroundColor(cardInk.opacity(0.95))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
                     .background(
@@ -237,18 +244,15 @@ struct CourseDetailOverlay: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func detailRow(systemImage: String, text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: systemImage)
-                .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.85))
-                .frame(width: 14)
-            Text(text)
-                .font(Theme.detailBodyFont)
-                .foregroundColor(.white.opacity(0.95))
-                .lineLimit(2)
-                .minimumScaleFactor(0.8)
-        }
+    /// 一行详情文字（无图标）。与安卓端大卡片一致（参考截图二）：
+    /// 「时间 …」「地点 …」「老师 …」都是纯文字行。
+    private func detailLine(_ text: String) -> some View {
+        Text(text)
+            .font(Theme.detailBodyFont)
+            .foregroundColor(cardInk.opacity(0.95))
+            .lineLimit(2)
+            .minimumScaleFactor(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// 标题比网格卡片大，但跟 `fitTextSize` 的结果联动 —— 用户把字号调大时，
@@ -257,17 +261,18 @@ struct CourseDetailOverlay: View {
         CGFloat(min(max(gridTextSize + 4, 14), 20))
     }
 
-    /// 地点行的文本：优先「楼名 + 教室」，两者都没有就不显示。
+    /// 地点行的文本，形如「〔五号教学楼〕 五号教学楼401」，与安卓端大卡片一致（参考截图二）。
     ///
     /// `building` / `room` 都直接来自模型（`Course.building` / `Course.room`，
     /// 对应 `TimetableGridV2.kt:733-741` 的 `buildingOf` / `roomOf`），
-    /// 这里只做拼接，不做任何解析。
+    /// 这里只把楼名用 〔〕 括起来再拼教室，不做任何解析。
+    /// 地点里没有空格（`building == location`、`room == ""`）时直接显示原地点。
     private var locationLine: String? {
         guard showsLocation, !course.location.isEmpty else { return nil }
         let building = course.building
         let room = course.room
         if !building.isEmpty, !room.isEmpty, building != course.location {
-            return "\(building) · \(room)"
+            return "〔\(building)〕 \(room)"
         }
         return course.location
     }
@@ -314,7 +319,8 @@ struct CourseDetailOverlay_Previews: PreviewProvider {
             course: sample,
             sourceRect: source,
             targetRect: targetRect,
-            panelColor: Color(argb: MorandiPalette.argb(forCourseNamed: sample.name)),
+            cardBackground: Color(argb: MorandiPalette.argb(forCourseNamed: sample.name)),
+            cardInk: .white,
             progress: .constant(1),
             showsTime: true,
             showsLocation: true,

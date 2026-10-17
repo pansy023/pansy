@@ -27,8 +27,14 @@
 | 8 | `project.yml` 既没有单元测试 target、也没有 UI 测试 target；CI 只跑 `swift test` + 编译，**没有模拟器、没有 XCUITest、没有截图、没有报告**。 | **P2** | 已补 `KebiaoTests`（app-hosted XCTest）+ `KebiaoUITests` target 与 `ui-tests` job（§4） |
 | 9 | 关于「空壳 / 假数据」：设置页控件**普遍是真实绑定 + 已落盘**，不是空壳（10 个 Toggle、5 个 Slider、5 个 Stepper·DatePicker、3 个 TextField 全接 `TimetableStore`）。全工程只有 2 处固定样例且**不参与真实业务**（`SettingsView.cardPreview`、各 `#if DEBUG` 预览）。课表数据只来自 `TimetableStore`，**没有用演示数据冒充抓取结果**。 | — | 保持 |
 
-> **诚实提示（2026-10-17 第三次更新）**：本文所有测试**已经在 CI 的 macOS runner 上真实执行过** ——
-> 最新 run `39027985486`（commit `a733622`）：`KebiaoCore` 263 条执行完（job = success）、
+> **诚实提示（最新 = 第四次更新，2026-10-17 13:18）**：run `39035942905`（commit `ba308f6`）
+> **三个 job 全部 success**，XCUITest **17/17 全部通过**（把 `renameCourse` 的测试侧清空方式
+> 改成「点输入框最右端定位光标到末尾再逐字退格」后转绿，断言一字未改）。
+> **本文下面凡写「16/17」「1 条未通过」的地方，一律以本行为准（那是轮 3 的快照）。**
+> `Kebiao-unsigned-ipa` artifact 已产出并解出：1,233,144 B，SHA256 `48F76A30…8804`。
+>
+> **诚实提示（2026-10-17 第三次更新，轮 3 快照）**：本文所有测试**已经在 CI 的 macOS runner 上真实执行过** ——
+> run `39027985486`（commit `a733622`）：`KebiaoCore` 263 条执行完（job = success）、
 > App 层 3 条通过（`** TEST SUCCEEDED **`）、XCUITest 17 条中 **16 通过 / 1 失败**。
 >
 > - **上一轮那 4 条 `confirmDelete` 重复匹配失败已收敛**：按你批准把

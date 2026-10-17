@@ -320,8 +320,13 @@ struct SettingsView: View {
             argb: Self.frosted(raw.background, percent: settings.courseFrostedIntensityPercent)
         )
 
-        return CourseCard(course: sample, style: style, height: height)
-            .frame(maxWidth: .infinity)
+        return CourseCard(
+            course: sample,
+            style: style,
+            height: height,
+            timeRangeText: "08:00-09:40"
+        )
+        .frame(maxWidth: .infinity)
     }
 
     /// 磨砂强度对底色的作用：逐字取自原版旧 `CourseCard` 的
