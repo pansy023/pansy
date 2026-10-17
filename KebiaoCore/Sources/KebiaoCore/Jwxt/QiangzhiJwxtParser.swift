@@ -513,6 +513,10 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
     /// 1. 用 **连续 5 个以上 `-`**（正则 `-{5,}`）切分，`trim` 后丢空；
     /// 2. 切不出内容时：若**不含** `left=100,top=50` → 整段文本当一门课；
     /// 3. 否则按 `left=100,top=50')\">` 切分，每段截到第一个 `</td>`，`trim` 后丢空。
+    ///
+    /// ⚠️ 与原版一致的事实：Kotlin 的 `Regex.split` 在**无命中**时返回单元素列表 `[str]`，
+    /// 因此第 1 步对任何非空输入都非空 → 第 2、3 步在 `:967` 的 `!segments.isEmpty()` 判定下
+    /// **不可达**（原版即如此，此处照搬不「修正」）。单元格内多门课的分隔靠第 1 步的 `-{5,}`。
     public static func splitCourseSegments(_ html: String) -> [String] {
         let byDashes = split(html, byRegularExpression: "-{5,}")
             .map { kotlinTrim($0) }
@@ -816,8 +820,18 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
     }
 
     /// 取第一个匹配的 group(1)；无匹配或该组未参与匹配时返回 `nil`。
+    ///
+    /// ⚠️ **不能**委托给 `firstGroupPair`：后者要求 `numberOfRanges > 2`（即必须存在两个
+    /// 捕获组），因此单捕获组的正则（`extractWeekRange`、`extractStartPeriod`、
+    /// `extractEndPeriod`、`extractTeacher` / `extractRoomRaw` 的兜底）会永远拿不到值。
     static func firstGroup(_ pattern: String, in value: String) -> String? {
-        firstGroupPair(pattern, in: value).map { $0.0 }
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard let match = regex.firstMatch(in: value, options: [], range: range),
+              match.numberOfRanges > 1,
+              let first = Range(match.range(at: 1), in: value)
+        else { return nil }
+        return String(value[first])
     }
 
     /// 取第一个匹配的 group(1) 与 group(2)。

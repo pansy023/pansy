@@ -79,13 +79,16 @@ final class JwxtTimetableParserTests: XCTestCase {
         XCTAssertEqual(QiangzhiJwxtParser.splitCourseSegments(" 只有一门课 "), ["只有一门课"])
     }
 
-    func testSplitCourseSegmentsByCellMarkerThenCutsAtTdClose() {
+    /// `splitCourseSegments`（`QiangzhiJwxtParser.java:952-1009`）的**真实**行为：
+    /// `:954` 用 `-{5,}` 切分，`:967` 判空用的是 `!segments.isEmpty()`；而 Kotlin 的
+    /// `Regex.split` 在**无命中**时返回单元素列表 `[str]`，`trim` + `isBlank` 过滤后仍非空
+    /// → 直接返回整段原文。因此 `:985` 起「按 `left=100,top=50')\">` 切分」的分支对非空输入
+    /// **不可达**（原版死代码），单元格里带标记也不会被拆开。
+    func testSplitCourseSegmentsWithoutDashesReturnsWholeTextEvenWithCellMarker() {
         // 真实标记：`left=100,top=50')">`（`QiangzhiJwxtParser.java:342`）。
         let marker = "left=100,top=50')\">"
-        XCTAssertEqual(
-            QiangzhiJwxtParser.splitCourseSegments(marker + "AAA</td>" + marker + "BBB</td>"),
-            ["AAA", "BBB"]
-        )
+        let html = marker + "AAA</td>" + marker + "BBB</td>"
+        XCTAssertEqual(QiangzhiJwxtParser.splitCourseSegments(html), [html])
     }
 
     // MARK: - 周次（recon §5.1）
