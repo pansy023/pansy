@@ -27,7 +27,24 @@
 | 8 | `project.yml` 既没有单元测试 target、也没有 UI 测试 target；CI 只跑 `swift test` + 编译，**没有模拟器、没有 XCUITest、没有截图、没有报告**。 | **P2** | 已补 `KebiaoTests`（app-hosted XCTest）+ `KebiaoUITests` target 与 `ui-tests` job（§4） |
 | 9 | 关于「空壳 / 假数据」：设置页控件**普遍是真实绑定 + 已落盘**，不是空壳（10 个 Toggle、5 个 Slider、5 个 Stepper·DatePicker、3 个 TextField 全接 `TimetableStore`）。全工程只有 2 处固定样例且**不参与真实业务**（`SettingsView.cardPreview`、各 `#if DEBUG` 预览）。课表数据只来自 `TimetableStore`，**没有用演示数据冒充抓取结果**。 | — | 保持 |
 
-> **诚实提示（最新 = 第四次更新，2026-10-17 13:18）**：run `39035942905`（commit `ba308f6`）
+> **诚实提示（最新 = 第五次更新，2026-10-17 15:05）**：run `39043320005`（commit `0f30adca`）
+> **三个 job 全部 success**：`生成工程并编译 iOS App` 10/10 步、`KebiaoCore 单元测试` 6/6 步、
+> `App 单元测试 + iPhone 模拟器 XCUITest` 15/15 步（含「测试未全部通过即让工作流失败」这步也是 success，
+> 即断言级无失败）。XCUITest 用例数按 `apps/KebiaoUITests/**` 里 `func test` 统计 = **17**。
+> 本轮改动（对应你给的两张安卓参考图）：
+> 1. **小卡片信息补全**：`CourseCard.swift` 竖排「课程名 / 时间区间 / 〔楼名〕 / 教室 / 教师」，
+>    时间用 `TimetableLayout.buildTimeRange`，楼名/教室用 `Course.building`/`Course.room`（与安卓同一个
+>    第一空格切分规则）；高度不足时用 `ViewThatFits` 从全信息逐级降级到只显示课程名。
+> 2. **大卡片颜色统一**：`TimetableView.swift` / `CourseDetailOverlay.swift` 展开卡底色**不再用面板白色**，
+>    而是沿用网格里那张小卡片**同一份** `CourseCardStyle.background`（由点击时随 `CourseCardTap` 上报，
+>    两处不再各算一遍），文字色同步用同一份 `ink`；详情行改为纯文字「时间 …／地点 〔楼名〕 教室／老师 …」，
+>    去掉系统图标（对齐参考图二）。
+> `Kebiao-unsigned-ipa` 已解出并覆盖工程根目录同名文件：**1,237,782 B**，SHA256 `4ED307EF…5C6E`。
+> 已按字节级核验包内 `Payload/Kebiao.app/Info.plist` 含 `NSAppTransportSecurity` /
+> `NSExceptionDomains` / `jwgl.xihang.com.cn` / `NSExceptionAllowsInsecureHTTPLoads` / `NSIncludesSubdomains` **共 5 个键**。
+> **本文下面凡写「16/17」「1 条未通过」的地方，一律以本行为准。**
+>
+> **诚实提示（第四次更新，2026-10-17 13:18）**：run `39035942905`（commit `ba308f6`）
 > **三个 job 全部 success**，XCUITest **17/17 全部通过**（把 `renameCourse` 的测试侧清空方式
 > 改成「点输入框最右端定位光标到末尾再逐字退格」后转绿，断言一字未改）。
 > **本文下面凡写「16/17」「1 条未通过」的地方，一律以本行为准（那是轮 3 的快照）。**
@@ -504,8 +521,23 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
       **新增 1 条失败** = `CourseCRUDUITests` 的**改名断言**（`KebiaoUITestCase.swift:453`）。
 12. **轮 2 的收口**：把 `deleteConfirmationButton()` 改成 `.firstMatch`。**✅ 已获你批准、已推送、
     已由轮 3 CI 验证有效**（那 4 条全部通过）。
-13. **（待你决定）** 轮 3 残留的改名那 1 条：**尚未改代码、尚未推送**。
-    修法与推送方向见 §6 第 8 条 —— 需要你先定「测试侧清空方式」还是「App 侧调试」。
+13. **轮 3 残留的改名那 1 条** —— **已解决**：按你批准的「测试侧清空方式」修（点输入框最右端
+    把光标确定性落到文本末尾，再逐字退格），两条断言**一字未改**，推送后**轮 4 CI 转绿**。
+14. **轮 4**：commit `ba308f6` → run `39035942905`：**三个 job 全部 success，XCUITest 17/17**。
+15. **轮 5**：commit `0f30adca` → run `39043320005`：**三个 job 全部 success，XCUITest 17/17**
+    （`生成工程并编译 iOS App` 10/10 步、`KebiaoCore 单元测试` 6/6 步、`App 单元测试 + XCUITest` 15/15 步）。
+    本轮内容 = 下面阶段 5 的两条 UI 对齐改动。
+
+### 阶段 5（UI 对齐安卓端，轮 5）
+
+16. **小卡片信息补全**（对应参考图 1）：`CourseCard.swift` 由「只画课程名」改为竖排
+    「课程名 / 时间区间 / 〔楼名〕 / 教室 / 教师」；卡片高度不足时用 `ViewThatFits` 逐级降级到只显示课程名。
+    **✅ 已实现，并已由轮 5 CI 真实编译 + XCUITest 验证**（17/17 通过；卡片的无障碍标签仍是课程名，
+    未破坏 XCUITest 对卡片的定位）。属于**静态 + 模拟器**验证，**真机视觉待你安装后确认**。
+17. **大卡片颜色统一**（对应参考图 2）：展开卡底色由 `Theme.panelColor(...)`（面板白）改为
+    **沿用网格里小卡片那份 `CourseCardStyle.background` / `.ink`**（点击时随 `CourseCardTap` 上报，
+    两处不再各算一遍）；详情行改为纯文字「时间 …／地点 〔楼名〕 教室／老师 …」，去掉系统图标。
+    **✅ 已实现，并已由轮 5 CI 真实编译 + XCUITest 验证**。**真机视觉待你安装后确认**。
 
 ---
 
