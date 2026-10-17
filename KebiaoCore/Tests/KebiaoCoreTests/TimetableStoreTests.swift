@@ -490,7 +490,7 @@ final class TimetableStoreTests: XCTestCase {
 
     // MARK: - 周次
 
-    func testCurrentWeekComesFromFirstWeekStartDate() {
+    func testCurrentWeekFollowsSemesterStartDate() {
         var settings = AppSettings.default
         settings.firstWeekStartDate = "2026-03-02"
         let store = makeStore(repository: InMemoryTimetableRepository(settings: settings))
@@ -577,19 +577,6 @@ final class TimetableStoreTests: XCTestCase {
         }
         XCTAssertEqual(store.visibleWeekdays, [1, 2, 3, 4, 5, 6, 7])
         XCTAssertEqual(store.weekDates.count, 7)
-    }
-
-    func testTodayColumnIndexPointsAtTodayWhenVisible() {
-        var settings = AppSettings.default
-        settings.firstWeekStartDate = "2026-03-02"
-        let store = makeStore(repository: InMemoryTimetableRepository(settings: settings))
-
-        // 2026-03-04 是周三，显示列表是 [周一…周五]。
-        XCTAssertEqual(store.todayColumnIndex, 2)
-        XCTAssertEqual(store.weekDates[2].date, "3/4")
-
-        store.shiftWeek(by: 1)
-        XCTAssertNil(store.todayColumnIndex, "今天不在显示的那一周里")
     }
 
     // MARK: - 课程合并

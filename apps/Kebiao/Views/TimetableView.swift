@@ -65,28 +65,36 @@ struct TimetableView: View {
     private var dark: Bool { store.uiFlags.isDarkTheme }
 
     var body: some View {
-        GeometryReader { rootProxy in
-            ZStack(alignment: .topLeading) {
-                scrollContent
-                    .onChange(of: rootProxy.size, initial: true) { _, newValue in
-                        rootSize = newValue
-                    }
+        ZStack(alignment: .topLeading) {
+            // 页面底色 + 自定义背景图（`AppSettings.backgroundImageUri`）。
+            // 铺在**所有内容之下**并忽略安全区，这样网格面板的半透明
+            // （有自定义背景时 alpha 0.62，见 `Theme.panelColor`）下面透出来的
+            // 就是背景图，与原版 `hasCustomBackground` 的语义一致。
+            AppBackground(uri: settings.backgroundImageUri, dark: dark)
+                .ignoresSafeArea()
 
-                if let expansion {
-                    overlay(for: expansion)
+            GeometryReader { rootProxy in
+                ZStack(alignment: .topLeading) {
+                    scrollContent
+                        .onChange(of: rootProxy.size, initial: true) { _, newValue in
+                            rootSize = newValue
+                        }
+
+                    if let expansion {
+                        overlay(for: expansion)
+                    }
                 }
-            }
-            .coordinateSpace(.named(Self.overlaySpaceName))
-            .onChange(of: rootProxy.size) { _, newValue in
-                // 旋转 / 尺寸变化：旧几何在屏幕上已不成立，直接取消展开。
-                // 不做动画 —— 屏幕正在转，任何补间都只会看起来更乱。
-                rootSize = newValue
-                if let current = expansion, !isUsable(current, containerSize: newValue) {
-                    clearExpansion()
+                .coordinateSpace(.named(Self.overlaySpaceName))
+                .onChange(of: rootProxy.size) { _, newValue in
+                    // 旋转 / 尺寸变化：旧几何在屏幕上已不成立，直接取消展开。
+                    // 不做动画 —— 屏幕正在转，任何补间都只会看起来更乱。
+                    rootSize = newValue
+                    if let current = expansion, !isUsable(current, containerSize: newValue) {
+                        clearExpansion()
+                    }
                 }
             }
         }
-        .background(Theme.pageBackground(dark: dark))
         // TODO(阶段④): 这里接「从教务系统同步 / 下拉刷新」。
         //             当前不发起任何网络请求（对应原版 autoSyncTimetableFromJwxt，本阶段不做）。
     }
@@ -98,13 +106,21 @@ struct TimetableView: View {
             VStack(spacing: 12) {
                 WeekSwitcher()
 
+                // 「显示主界面滑动条」（`showWeekSlider`）。原版在网格**上方**
+                // 画一个 1…semesterWeeks 的 Slider + 居中「第N周」小字
+                // （`TimetableScreenKt.java:4367-4409`，`TimetableWeekPage`）：
+                // 拖动时 `weekOffset = coerceIn(值, 1, 学期周数) - 当前教学周`。
+                // 这里逐条照抄该语义，值直接取 `displayedWeek`。
+                if settings.showWeekSlider {
+                    weekSlider
+                }
+
                 TimetableGrid(
                     displayedWeek: store.displayedWeek,
                     visibleWeekdays: store.visibleWeekdays,
                     weekDates: store.weekDates,
                     courses: displayedCourses,
                     occursThisWeek: occursThisWeekMap,
-                    todayColumnIndex: store.todayColumnIndex,
                     onTapCard: { tap in handleTap(tap) },
                     overlaySpaceName: Self.overlaySpaceName,
                     gridFrameInOverlay: $gridFrameInOverlay
@@ -118,6 +134,48 @@ struct TimetableView: View {
         }
         // 换周后课程集合变了，展开卡里的数据可能已不属于这一周，直接收起。
         .onChange(of: store.displayedWeek) { _, _ in clearExpansion() }
+    }
+
+    // MARK: - 主界面周次滑动条
+
+    /// `showWeekSlider` 打开时显示的周次滑动条。
+    ///
+    /// 语义逐条对应 `TimetableScreenKt.java:4367-4409`：
+    /// - 上界 = `semesterWeeks.coerceAtLeast(1)`；
+    /// - 当前值 = 显示周次夹在 `1…上界`；
+    /// - 拖动 → `weekOffset = 新值 - 当前教学周`（原版传的是 offset，由
+    ///   `TimetableViewModel.setCurrentWeekOffset` 落地）。
+    private var weekSlider: some View {
+        let semesterWeeks = max(settings.semesterWeeks, 1)
+        let current = min(max(store.displayedWeek, 1), semesterWeeks)
+
+        return VStack(spacing: 4) {
+            Slider(
+                value: Binding(
+                    get: { Double(current) },
+                    set: { newValue in
+                        let week = min(max(Int(newValue.rounded()), 1), semesterWeeks)
+                        store.weekOffset = week - store.currentWeek
+                    }
+                ),
+                in: 1...Double(semesterWeeks),
+                step: 1
+            )
+            .accessibilityLabel("周次")
+            Text("第\(current)周")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.secondaryInk(dark: dark))
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Theme.panelColor(dark: dark, hasCustomBackground: settings.hasCustomBackground))
+        )
+        // 拖动停止后供 VoiceOver 读出的完整周次文案。
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(store.weekNumberText)
     }
 
     // MARK: - 数据

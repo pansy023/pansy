@@ -170,21 +170,6 @@ public final class TimetableStore: ObservableObject {
         weekDates.map { TimetableLayout.dayIndexOf($0.label) }
     }
 
-    /// 今天是第几个显示列（在 `weekDates` 里的下标）；今天不在当前显示的一周里时为 nil。
-    ///
-    /// 原版网格本身**不**把今天高亮出来（`TimetableGridV2.kt:324-345` 只画
-    /// `"周" + label` 与 `prettyDate(date)`），这是 iOS 端为了
-    /// 「信息一眼可读」加的一点正向提示，不改变任何业务规则。
-    /// 日期串用与 `WeekLogic.weekDates` 相同的 `"M/d"` 格式比较。
-    public var todayColumnIndex: Int? {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "M/d"
-        let today = formatter.string(from: now())
-        return weekDates.firstIndex { $0.date == today }
-    }
-
     // MARK: - 派生：课程
 
     /// 某一天在某个面板里的课程（已做相邻合并）。
@@ -299,6 +284,24 @@ public final class TimetableStore: ObservableObject {
     public func selectTimetableProfile(id: String) {
         guard profiles.contains(where: { $0.id == id }) else { return }
         mutateSettings { $0.selectedTimetableProfileId = id }
+    }
+
+    /// 整套覆盖作息方案。
+    ///
+    /// 逐字对应 Android `TimetableViewModel.saveTimetableProfiles(profiles)`
+    /// （`TimetableViewModel.java:128-132` → `TimetableViewModel$saveTimetableProfiles$1.java:57-59`：
+    /// `_timetableProfiles.value = profiles` 后 `localStorage.saveTimetableProfiles(profiles)`）。
+    /// 设置页的「编辑时间表」就是靠它把改好的 `periodTimes` 写回去
+    /// （原版是逐节调 `updatePeriodTime(profileId,periodIndex,start,end)`，
+    /// 语义等价：都是替换该方案的 `periodTimes` 再落盘）。
+    ///
+    /// 与原版的一处**有意**差异：空数组不覆盖。原版无条件替换，但 iOS 端
+    /// `activeProfile` 依赖「至少有一套方案」（`profiles.first ?? .defaultProfile`），
+    /// 允许清空会让下次启动的时间槽来源变得不可预测（理由同 `replaceAllCourses`）。
+    public func saveTimetableProfiles(_ profiles: [TimetableProfile]) {
+        guard !profiles.isEmpty else { return }
+        self.profiles = profiles
+        persist { try repository.saveProfiles(profiles) }
     }
 
     public func saveCredentials(_ credentials: UserCredentials) {

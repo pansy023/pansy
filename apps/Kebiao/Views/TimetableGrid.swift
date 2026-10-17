@@ -18,7 +18,9 @@ struct CourseCardTap {
 /// 课表网格：表头行 + 左列节次 + 三个时间段面板。
 ///
 /// 网格**不自己读**课程数据，全部由 `TimetableView` 传进来：
-/// 「显示第几周、今天在哪一列、选中了哪张卡」只有一处真相。
+/// 「显示第几周、显示哪几天、选中了哪张卡」只有一处真相。
+/// （原版网格**不**标记「今天」，所以这里也没有「今天在哪一列」这个输入，
+/// 见 `headerRow` 的说明。）
 ///
 /// 布局结构（逐条对应 `apk_work/kb/src2/TimetableGridV2.kt`）：
 /// - 表头行高 `HeaderHeight = 46`，左列宽 `leftColumnWidth(dayCount:)`
@@ -43,8 +45,6 @@ struct TimetableGrid: View {
     let courses: [Course]
     /// `courses` 里每门课是否发生在当前显示周，键为 `Course.id`。
     let occursThisWeek: [Int: Bool]
-    /// `TimetableStore.todayColumnIndex`：今天在第几列，nil 表示今天不在这一周内。
-    let todayColumnIndex: Int?
     /// 点击一张卡片。
     let onTapCard: (CourseCardTap) -> Void
     /// 展开浮层所在的具名坐标系名。网格上报的矩形都用它测量。
@@ -72,12 +72,6 @@ struct TimetableGrid: View {
 
     /// 三个面板（上午 1-4 / 下午 5-8 / 晚上 9-rows），直接取 store 的派生值。
     private var blockRanges: [ClosedRange<Int>] { store.periodBlocks }
-
-    /// 今天所在列 — 只有它落在可见列里才生效。
-    private var todayColumn: Int? {
-        guard let index = todayColumnIndex, index >= 0, index < visibleWeekdays.count else { return nil }
-        return index
-    }
 
     /// 面板底色：`panelColor(dark:hasCustomBackground:)`（`TimetableGridV2.kt:126-135`）。
     /// 第二个参数走 `AppSettings.hasCustomBackground`（`!= null && isNotBlank()`，
@@ -122,17 +116,17 @@ struct TimetableGrid: View {
 
     // MARK: - 表头行
 
-    /// 表头行：`"周一" + 日期` 的单元格 + 今天列的强调。
+    /// 表头行：`"周一" + 日期` 的单元格。
     ///
-    /// 拆成三个小属性而不是一个 `ZStack` 里塞四段 `if`，纯粹是为了让
-    /// Swift 的类型检查器少受点罪（这种多层 `ZStack` + `ForEach` + `if let`
-    /// 的组合是 `expression too complex` 的常客）。
+    /// ⚠️ 原版网格**不**强调今天：`TimetableGridV2.kt:324-345` 只画
+    /// `"周" + label` 与 `prettyDate(date)`，每列一视同仁。
+    /// 早先的 iOS 版本额外给「今天所在列」铺了一层蓝色底 + 顶部蓝线，
+    /// 结果在用户的机器上表现为「周五整列发蓝」，属于无业务依据的 UI 装饰，
+    /// 已按用户要求整体删除：现在所有天的列背景完全一致。
     private func headerRow(leftWidth: CGFloat, dayWidth: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             panelColor
-            headerTodayColumnHighlight(leftWidth: leftWidth, dayWidth: dayWidth)
             headerCells(leftWidth: leftWidth, dayWidth: dayWidth)
-            headerTodayColumnAccent(leftWidth: leftWidth, dayWidth: dayWidth)
         }
         .frame(height: Theme.headerHeight)
         // 表头只圆上面两角（面板各自圆角，表头单独贴在最上方）。
@@ -145,34 +139,6 @@ struct TimetableGrid: View {
                 style: .continuous
             )
         )
-    }
-
-    /// 今天所在列在表头里的整列底色。
-    ///
-    /// 原版网格不高亮今天（`TimetableGridV2.kt:324-345` 只画星期与日期），
-    /// 这是 iOS 端加的正向提示，见 `Theme.todayHighlight` 的说明。
-    @ViewBuilder
-    private func headerTodayColumnHighlight(leftWidth: CGFloat, dayWidth: CGFloat) -> some View {
-        if let todayColumn, !visibleWeekdays.isEmpty {
-            Rectangle()
-                .fill(Theme.todayHighlight(dark: dark))
-                .frame(width: dayWidth, height: Theme.headerHeight)
-                .offset(x: leftWidth + dayCellLeft(index: todayColumn, dayWidth: dayWidth))
-        }
-    }
-
-    /// 今天所在列顶部的一条细线。
-    @ViewBuilder
-    private func headerTodayColumnAccent(leftWidth: CGFloat, dayWidth: CGFloat) -> some View {
-        if let todayColumn, !visibleWeekdays.isEmpty {
-            Rectangle()
-                .fill(Theme.todayAccent(dark: dark))
-                .frame(width: dayWidth, height: 2)
-                .offset(
-                    x: leftWidth + dayCellLeft(index: todayColumn, dayWidth: dayWidth),
-                    y: 0
-                )
-        }
     }
 
     /// 表头单元格（星期 + 日期），左列那格留空。
@@ -194,9 +160,7 @@ struct TimetableGrid: View {
         return VStack(spacing: 1) {
             Text("周\(label)")
                 .font(Theme.weekdayFont)
-                .foregroundColor(
-                    todayColumn == index ? Theme.primaryInk(dark: dark) : Theme.secondaryInk(dark: dark)
-                )
+                .foregroundColor(Theme.secondaryInk(dark: dark))
                 .lineLimit(1)
             if !rawDate.isEmpty {
                 Text(TimetableLayout.prettyDate(rawDate))
@@ -275,15 +239,8 @@ struct TimetableGrid: View {
             // 面板底色铺在**整个面板**（左列 + 天列）上，见 `periodBlock` 的
             // `.background(...)` —— 所以这里不再重复铺一层，否则两层 alpha 叠加
             // 会比原版更深（原版是 `Color.copy(alpha = a)` 一次铺满）。
+            // 同理，这里也没有「今天列」高亮：所有天的列背景一致。
             Color.clear
-
-            // 今天整列高亮：先铺，再让卡片盖在上面。
-            if let todayColumn {
-                Rectangle()
-                    .fill(Theme.todayHighlight(dark: dark))
-                    .frame(width: dayWidth, height: cellHeight * CGFloat(max(blockEnd - blockStart + 1, 1)))
-                    .offset(x: dayCellLeft(index: todayColumn, dayWidth: dayWidth))
-            }
 
             ForEach(Array(visibleWeekdays.enumerated()), id: \.offset) { index, dayOfWeek in
                 cardsForDay(

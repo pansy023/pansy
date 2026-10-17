@@ -61,7 +61,7 @@ struct WeekSwitcher: View {
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Theme.panelColor(dark: dark, hasCustomBackground: store.settings.backgroundImageUri != nil))
+                .fill(Theme.panelColor(dark: dark, hasCustomBackground: store.settings.hasCustomBackground))
         )
         .animation(.easeInOut(duration: 0.22), value: store.displayedWeek)
     }
@@ -85,7 +85,7 @@ struct WeekSwitcher: View {
         .padding(.vertical, 3)
         .background(
             RoundedRectangle(cornerRadius: Theme.weekBadgeRadius, style: .continuous)
-                .fill(Theme.todayHighlight(dark: dark))
+                .fill(Theme.subtleFill(dark: dark))
         )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(store.weekNumberText)
@@ -100,7 +100,7 @@ struct WeekSwitcher: View {
                 .foregroundColor(Theme.primaryInk(dark: dark))
                 .frame(width: 30, height: 30)
                 .background(
-                    Circle().fill(Theme.todayHighlight(dark: dark))
+                    Circle().fill(Theme.subtleFill(dark: dark))
                 )
         }
         .accessibilityLabel(label)
@@ -118,7 +118,7 @@ struct WeekSwitcher: View {
                 .frame(height: 30)
                 .background(
                     RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .fill(Theme.todayHighlight(dark: dark).opacity(isCurrent ? 0.4 : 1))
+                        .fill(Theme.subtleFill(dark: dark).opacity(isCurrent ? 0.4 : 1))
                 )
         }
         .disabled(isCurrent)

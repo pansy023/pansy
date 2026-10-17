@@ -116,23 +116,17 @@ enum Theme {
             : Color(.sRGB, red: 0.10, green: 0.10, blue: 0.12, opacity: 1)
     }
 
-    /// 今天所在列的高亮底色。
+    /// 中性浅底：用来给按钮、徽标这类小控件压一层灰底。
     ///
-    /// ⚠️ 这是 iOS 端为「信息一眼可读」加的正向提示，**不是** Android 网格的行为：
-    /// 原版网格本身不高亮今天（`TimetableGridV2.kt:324-345` 只画 `"周" + label`
-    /// 与 `prettyDate(date)`）。它不改变任何业务规则，只影响观感，
-    /// 与 `TimetableStore.todayColumnIndex` 的文档说明一致。
-    static func todayHighlight(dark: Bool) -> Color {
+    /// ⚠️ 曾用名 `todayHighlight`（蓝色系），当时被用于「今天所在列」整列高亮；
+    /// 1.11.5 的原版网格**不**高亮任何一列（`TimetableGridV2.kt:324-345` 只画
+    /// `"周" + label` 与 `prettyDate(date)`），所以那份高亮已按用户要求删除。
+    /// 剩下的三处调用（周次徽标、翻周圆钮、回到本周）只需要一层无色偏的浅底，
+    /// 这里改成纯灰阶，避免再出现「某一列/某一天莫名变蓝」的观感。
+    static func subtleFill(dark: Bool) -> Color {
         dark
-            ? Color(.sRGB, red: 1, green: 1, blue: 1, opacity: 0.075)
-            : Color(.sRGB, red: 0.29, green: 0.42, blue: 0.78, opacity: 0.09)
-    }
-
-    /// 今天列顶部的一条细线（比整列底色更克制的强调）。
-    static func todayAccent(dark: Bool) -> Color {
-        dark
-            ? Color(.sRGB, red: 0.62, green: 0.72, blue: 1.0, opacity: 0.70)
-            : Color(.sRGB, red: 0.22, green: 0.36, blue: 0.78, opacity: 0.70)
+            ? Color(.sRGB, red: 1, green: 1, blue: 1, opacity: 0.10)
+            : Color(.sRGB, red: 0, green: 0, blue: 0, opacity: 0.06)
     }
 
     // MARK: - 字号
