@@ -264,9 +264,9 @@ struct RootView: View {
     /// 一样按同一条几何路径立即收拢，不用等动画跑完。
     ///
     /// 唯一的例外是下面那道 `reverseGuardSeconds` 窗口（理由见该常量的说明）。
-    /// 它必须留在**状态**这一层，不能只靠命中测试：CI run `39109889672` 实测，
-    /// 转场途中那颗导航栏按钮就已经能被 XCUITest 点到（工具栏由 UIKit 托管，
-    /// SwiftUI 的 `allowsHitTesting` 拦不住它），那一击正是被这里的判断挡下的。
+    /// 为什么这个判断必须留在**状态**这一层、不能只靠命中测试：CI run `39109889672`
+    /// 的日志里，转场途中（t=17.03s）那颗「返回」按钮**确实被合成了一次点击**，
+    /// 而页面没有关 —— 挡下那一击的正是状态判断，不是命中测试。
     private func closeSettings() {
         // `progress > 0`：已经在收拢途中（模型值已到 0）再点就不重复触发。
         guard let reveal = settingsReveal, reveal.progress > 0 else { return }

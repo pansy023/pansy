@@ -134,11 +134,15 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         )
         // 「只开出一个」：同一个入口在无障碍树里只能有一份。
         // 计数必须走 `matching(identifier:)` —— `XCUIElement` 本身没有 `count`。
-        XCTAssertEqual(
+        // ⚠️ 这里断言的是**不超过** 1，不是「恰好 1」：第二次点击落在减速 40 倍的展开动画途中，
+        // 按设计触发「中途反悔」—— 此刻页面正在收拢（run `39127819377` 的截图：圆盘正缩回左上角），
+        // 收拢过程中内容会从无障碍树里消失（实测那次 `settings.nav.back` 计数 = 0）。
+        // 「重复呈现」这类缺陷会把计数推到 2，照样会被抓到这里。
+        XCTAssertLessThanOrEqual(
             app.buttons.matching(identifier: "settings.nav.account").count, 1,
             "存在多个设置页实例（重复呈现）"
         )
-        XCTAssertEqual(
+        XCTAssertLessThanOrEqual(
             app.buttons.matching(identifier: "settings.nav.back").count, 1,
             "存在多个「返回」按钮（重复呈现）"
         )
