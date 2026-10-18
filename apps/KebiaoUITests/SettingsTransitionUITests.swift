@@ -20,6 +20,10 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
     /// 中间帧断言才不会变成看运气。
     private static let slowdown = 40
 
+    /// 主体展开时长（秒）。⚠️ 这是 `RootView.revealSeconds` 的**同一个值**：
+    /// 那边改了这里必须一起改，否则下面的时长等待会失真。
+    private static let revealSeconds: TimeInterval = 0.55
+
     override func setUpWithError() throws {
         // 不走 `super`：父类的 `setUpWithError` 会用**不带**减速参数的启动参数起 App，
         // 而这里的用例都需要自己那套参数，所以自己启动一次（其余流程与父类一致）。
@@ -35,13 +39,13 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
     /// 转场从齿轮按钮出发、向外扩张，并且**不是**瞬间切到整屏。
     ///
     /// 断言依据（全部是像素采样，不是看代码猜）：
-    /// - 三帧都有变化 ⇒ 转场真的在动，不是没反应；
-    /// - 第 2、3 帧的变化区域都**紧贴齿轮按钮**（按钮中心 50pt 内就有变化）
-    ///   ⇒ 扩散的圆心在按钮上，而不是屏幕中心、也不是从屏幕外飞进来；
-    /// - 到按钮中心的**最远**变化距离逐帧不减、且第 3 帧明显大于第 1 帧
-    ///   ⇒ 区域在持续向外扩张；
-    /// - 第 3 帧仍未触及屏幕最远角（< 0.85 × 对角距离）
-    ///   ⇒ 展开是逐步的，不是一次铺满整屏。
+    /// - 与点击前的基线相比，第一帧就出现变化，且变化区域**紧贴齿轮按钮**
+    ///   （按钮中心 50pt 内就有变化）⇒ 转场真的发生，且起点落在按钮上；
+    /// - 把**相邻两帧**相减，得到的是「这一小段时间里新铺开的那一圈」：
+    ///   所有变化点到按钮中心的距离挤在一个窄带里（实测 124→157pt、153→184pt）
+    ///   ⇒ 新铺开的区域是**以按钮为圆心的圆环**，不是从屏幕中心或屏幕外长出来的；
+    /// - 圆环的内沿与外沿都逐帧往外走 ⇒ 是连续扩张，不是跳变；
+    /// - 最后一帧的外沿仍远小于「按钮到屏幕最远角」的距离 ⇒ 还没铺满整屏。
     func testTransitionStartsAtGearButtonAndExpandsOutward() {
         let entry = app.buttons["tt.nav.settings"]
         XCTAssertTrue(entry.waitForExistence(timeout: defaultTimeout), "主界面找不到设置入口 tt.nav.settings")
@@ -66,45 +70,63 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
                 + pow(Double(max(center.y, screen.height - center.y)), 2)
         ).squareRoot()
 
-        var regions: [ChangedRegion] = []
+        var vsBaseline: [ChangedRegion] = []
         for (index, shot) in frames.enumerated() {
             guard let region = changedRegion(from: baseline, to: shot, origin: center, screen: screen) else {
                 XCTFail("第 \(index + 1) 帧截图解码失败，无法做像素比较")
                 return
             }
-            regions.append(region)
+            vsBaseline.append(region)
         }
-
-        for region in regions {
+        for region in vsBaseline {
             XCTAssertGreaterThan(region.probeCount, 0, "点击后没有任何像素变化：转场没有发生")
         }
-        // 紧贴按钮：转场的起点必须落在按钮上。
-        XCTAssertLessThanOrEqual(regions[1].nearest, 50, "第 2 帧的变化区域没有贴住齿轮按钮（最近 \(regions[1].nearest)pt）")
-        XCTAssertLessThanOrEqual(regions[2].nearest, 50, "第 3 帧的变化区域没有贴住齿轮按钮（最近 \(regions[2].nearest)pt）")
-        // 向外扩张：最远变化距离不减，并且确实变大了。
-        XCTAssertGreaterThanOrEqual(
-            regions[1].farthest, regions[0].farthest - 25,
-            "第 2 帧的最远变化距离比第 1 帧更小（\(regions[0].farthest)pt → \(regions[1].farthest)pt），扩散不连续"
+        // ① 起点落在按钮上：转场刚出现时，变化区域紧贴齿轮按钮。
+        XCTAssertLessThanOrEqual(
+            vsBaseline[0].nearest, 50,
+            "第一帧的变化区域没有贴住齿轮按钮（最近 \(vsBaseline[0].nearest)pt）"
         )
-        XCTAssertGreaterThanOrEqual(
-            regions[2].farthest, regions[1].farthest - 25,
-            "第 3 帧的最远变化距离比第 2 帧更小（\(regions[1].farthest)pt → \(regions[2].farthest)pt），扩散不连续"
-        )
-        XCTAssertGreaterThan(
-            regions[2].farthest, regions[0].farthest + 50,
-            "转场途中区域没有向外扩张（\(regions[0].farthest)pt → \(regions[2].farthest)pt）"
-        )
-        // 还没铺满：第三帧时最远变化距离仍明显小于「到最远角的距离」。
+
+        // ② 相邻两帧相减 = 「这一小段时间里新铺开的那一圈」。圆环必须是**以按钮为圆心的正圆环**
+        //    （所有变化点离按钮中心的距离挤在一个窄带里），而且内沿、外沿都逐帧往外走。
+        var rings: [ChangedRegion] = []
+        for index in 0..<(frames.count - 1) {
+            guard let ring = changedRegion(
+                from: frames[index],
+                to: frames[index + 1],
+                origin: center,
+                screen: screen
+            ) else {
+                XCTFail("第 \(index + 1)/\(index + 2) 帧之间无法比较像素")
+                return
+            }
+            rings.append(ring)
+        }
+        XCTAssertEqual(rings.count, frames.count - 1, "相邻帧比较的组数不对")
+        for (index, ring) in rings.enumerated() {
+            XCTAssertGreaterThan(
+                ring.probeCount, 0,
+                "第 \(index + 1)→\(index + 2) 帧之间没有任何变化：展开是跳变的，不是连续的"
+            )
+            XCTAssertGreaterThan(
+                ring.farthest, ring.nearest + 15,
+                "第 \(index + 1)→\(index + 2) 帧的变化是「一薄层」而不是在铺开（近 \(ring.nearest)pt / 远 \(ring.farthest)pt）"
+            )
+            XCTAssertLessThanOrEqual(
+                ring.farthest, ring.nearest + 90,
+                "第 \(index + 1)→\(index + 2) 帧的变化点到按钮中心的距离跨度太大"
+                + "（\(ring.nearest)…\(ring.farthest)pt）：新铺开的区域不是以按钮为圆心的圆环"
+            )
+        }
+        XCTAssertGreaterThan(rings[1].nearest, rings[0].nearest, "圆环的内沿没有往外走（\(rings[0].nearest)pt → \(rings[1].nearest)pt）")
+        XCTAssertGreaterThan(rings[1].farthest, rings[0].farthest, "圆环的外沿没有往外走（\(rings[0].farthest)pt → \(rings[1].farthest)pt）")
         XCTAssertLessThan(
-            regions[2].farthest, diagonal * 0.85,
-            "展开区域已经触到屏幕最远角（\(regions[2].farthest)pt / 对角 \(diagonal)pt）：看起来更像瞬间铺满整屏"
+            rings[1].farthest, diagonal * 0.85,
+            "已经铺到屏幕最远角附近（\(rings[1].farthest)pt / 对角 \(diagonal)pt）：看起来更像瞬间铺满整屏"
         )
 
         // 转场结束后：内容完整、可点，返回能收拢回主界面。
-        XCTAssertTrue(
-            waitForSettle(app.buttons["settings.nav.back"], timeout: 60),
-            "转场结束后「返回」按钮仍是不可点状态"
-        )
+        waitForTransition(slowdown: Double(Self.slowdown))
         XCTAssertTrue(app.buttons["settings.nav.account"].exists, "转场结束后设置页内容缺失")
         attachScreenshot("transition-settled-settings")
 
@@ -133,10 +155,9 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
             app.buttons["settings.nav.account"].waitForExistence(timeout: defaultTimeout),
             "连点两下后设置页没有打开"
         )
-        XCTAssertTrue(
-            waitForSettle(app.buttons["settings.nav.back"], timeout: 60),
-            "转场结束后「返回」按钮仍是不可点状态"
-        )
+        // ⚠️ 必须等展开动画真的跑完再点返回，否则点击会被转场闸门吃掉（见
+        // `waitForTransition` 的说明）。这一步故意**不**用 `isHittable` 判断。
+        waitForTransition(slowdown: Double(Self.slowdown))
         // 「只开出一个」：同一个入口在无障碍树里只能有一份。
         // 计数必须走 `matching(identifier:)` —— `XCUIElement` 本身没有 `count`。
         XCTAssertEqual(
@@ -190,10 +211,8 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         let baseline = app.screenshot()
 
         entry.tap()
-        XCTAssertTrue(
-            waitForSettle(app.buttons["settings.nav.back"], timeout: 30),
-            "减弱动态效果下设置页没有在合理时间内变为可点"
-        )
+        // 减弱动态效果下也按已知时长等（这条用例没有减速参数，所以倍数传 1）。
+        waitForTransition(slowdown: 1)
         let settled = app.screenshot()
         attachScreenshot("reduce-motion-settled-settings")
 
@@ -241,7 +260,9 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         guard let beforeImage = image(before), let afterImage = image(after) else { return nil }
 
         let rayCount = 32
-        let step: CGFloat = 25
+        // 步长 12pt：实测「新铺开的那一圈」厚度只有 ~32pt（124.5→156.8），
+        // 步长太粗（例如 25pt）会让这么薄的圆环采样成 1 个点、甚至完全采不到。
+        let step: CGFloat = 12
         let maxRadius = max(screen.width, screen.height)
         let pixelsPerPoint = CGFloat(beforeImage.width) / max(screen.width, 1)
         let probeSide = 9 * pixelsPerPoint
@@ -257,6 +278,8 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
             var radius: CGFloat = 0
             while radius <= maxRadius {
                 let point = CGPoint(x: origin.x + radius * dx, y: origin.y + radius * dy)
+                // 记录的就是这一点的真实距离（不能先把 radius 加上步长再记，否则整体偏大一个步长）。
+                let distance = radius
                 radius += step
                 // 按钮上方 20pt 以上属于状态栏，整条忽略。
                 guard point.y > origin.y - 20 else { continue }
@@ -272,8 +295,8 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
                 // 不会把「同一画面」误判成变化，却能抓到「底色替换了一层」这种低反差变化。
                 guard delta > 3 else { continue }
                 probeCount += 1
-                nearest = min(nearest, radius)
-                farthest = max(farthest, radius)
+                nearest = min(nearest, distance)
+                farthest = max(farthest, distance)
             }
         }
 
@@ -333,14 +356,20 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
 
     // MARK: - 等待
 
-    /// 等转场真的结束：内容层在动画跑完之前是 `allowsHitTesting(false)`，
-    /// 因此「元素变可点」就是「转场结束」的确定信号（不是靠 sleep 猜时间）。
-    private func waitForSettle(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if element.isHittable { return true }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-        }
-        return element.isHittable
+    /// 等「打开」转场跑完。
+    ///
+    /// ⚠️ **不能**用 `isHittable` 当信号 —— 这是 CI run 39109889672 实测出来的教训：
+    /// 展开动画还在跑（减速 40 倍 → 22 秒）的时候，`settings.nav.back` 就已经报
+    /// `isHittable == true`（导航栏里的工具栏按钮由 UIKit 托管，SwiftUI 的
+    /// `allowsHitTesting` 门挡不住它）。测试于是在动画中途点了返回，而那一击被
+    /// `closeSettings` 的 `interactive` 判断挡下，页面当然没关，白等了 60 秒。
+    /// 所以这里按**已知时长**等：0.55s × 减速倍数 × 1.2 + 0.5s 余量。
+    ///
+    /// - Parameter slowdown: 这次运行时 App 实际生效的减速倍数。正常用例是
+    ///   `Self.slowdown`；「减弱动态效果」那条用例启动时**没有**带减速参数，所以传 1。
+    ///   ⚠️ `Self.revealSeconds` 与 `RootView.revealSeconds` 必须保持一致。
+    private func waitForTransition(slowdown: Double) {
+        let seconds = Self.revealSeconds * slowdown * 1.2 + 0.5
+        RunLoop.current.run(until: Date().addingTimeInterval(seconds))
     }
 }

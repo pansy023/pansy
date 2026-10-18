@@ -8,6 +8,9 @@ import SwiftUI
 /// - `contentVisible`：设置页内容的淡入开关，比遮罩**略滞后**（重叠，不空等）；
 /// - `interactive`：内容是否接受点击。**动画跑完才置 `true`**，
 ///   这样转场途中的连点会被挡下，不会出现「点开一半又被点回去」或重复导航。
+///   ⚠️ 这一位不能省：导航栏里的工具栏按钮由 UIKit 托管，SwiftUI 的
+///   `allowsHitTesting` 拦不住它（实测见 `RootView.closeSettings` 的说明），
+///   真正挡下「动画途中点返回」的是这个状态位。
 ///
 /// `origin` 是齿轮按钮在**屏幕坐标**（`.global`）里的矩形，由按钮自己量出来
 /// （`RootView` 的 `GearFramePreferenceKey`），不是硬编码坐标。

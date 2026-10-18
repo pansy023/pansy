@@ -251,6 +251,12 @@ struct RootView: View {
     }
 
     /// 收起设置页：圆形沿原路径收拢回齿轮按钮。
+    ///
+    /// 下面这道 `interactive` 闸门**真的在生效**，不是摆设：CI run 39109889672 的
+    /// 日志实测 —— 展开动画还在跑的时候，导航栏里那颗「返回」按钮就已经能被 XCUITest
+    /// 点到了（工具栏按钮由 UIKit 托管，SwiftUI 的 `allowsHitTesting` 拦不住它），
+    /// 而那一击正是被 `reveal.interactive` 挡下的。少了它，动画途中的连点就会变成
+    /// 「刚打开又被关掉」。
     private func closeSettings() {
         // 动画没跑完时的点击（含连点）一律忽略：不会重复导航。
         guard let reveal = settingsReveal, reveal.interactive else { return }
