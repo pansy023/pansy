@@ -27,8 +27,123 @@
 | 8 | `project.yml` 既没有单元测试 target、也没有 UI 测试 target；CI 只跑 `swift test` + 编译，**没有模拟器、没有 XCUITest、没有截图、没有报告**。 | **P2** | 已补 `KebiaoTests`（app-hosted XCTest）+ `KebiaoUITests` target 与 `ui-tests` job（§4） |
 | 9 | 关于「空壳 / 假数据」：设置页控件**普遍是真实绑定 + 已落盘**，不是空壳（10 个 Toggle、5 个 Slider、5 个 Stepper·DatePicker、3 个 TextField 全接 `TimetableStore`）。全工程只有 2 处固定样例且**不参与真实业务**（`SettingsView.cardPreview`、各 `#if DEBUG` 预览）。课表数据只来自 `TimetableStore`，**没有用演示数据冒充抓取结果**。 | — | 保持 |
 | 10 | **本轮新发现的缺陷（源自你截图那句「未获取到课表数据；已保留本地原有课程。」）**：`fetchTimetable` 抓取失败时**静默返回空表**，把「抓取失败」伪装成「本学期没课」；而安卓那套「302 且 `Location` 含 `Login`」的会话失效判据在 iOS 上**永不命中**（实测未认证时服务端对 `/jsxsd/xskb/xskb_list.do` 直接回 **200 + 登录页**），于是会话失效被彻底吞掉。 | **P0** | 已修（§5 阶段 6），并已由轮 6 CI 验证：编译 + 267 条单测（含 4 条新测）+ XCUITest 17/17 全绿 |
+| 11 | **真机登录失败无法定位**：失败时只有安卓那一句话，区分不了「密码串被键盘改过（自动大写／智能标点／多空格）」与「服务端真的判密码错」；且 `encryptCode` 的切分单位原按 Swift **字符簇**（`Array(_:)`），而登录页 JS / Java 按 **UTF-16 code unit** —— BMP 内等效，emoji / 组合字符会分叉。 | **P0** | 已修（§ 第七次更新）：切分单位改 UTF-16、密码框补键盘行为约束、失败文案带出「密码位数 + 服务端原文」。run `39089869643` 三 job 全绿；算法另用**真 JS 引擎**做 4028 例差分自测（0 处分叉） |
 
-> **诚实提示（最新 = 第六次更新，2026-10-17 23:58）**：run `39046318485`（commit `5578acd`）
+> **诚实提示（最新 = 第七次更新，2026-10-18）**：本轮是「真机登录失败 → 修 → 自测」的闭环，跨两个 run：
+>
+> **① 修编译错误并转绿**：run `39089869643`（commit `1242044`）**三个 job 全部 success**
+> （`KebiaoCore 单元测试` 6/6 步、含 `swift test` = success；`生成工程并编译 iOS App` 10/10 步；
+> `App 单元测试 + iPhone 模拟器 XCUITest` 15/15 步，含末尾闸门「测试未全部通过即让工作流失败」= success）。
+> 上一次红（run `39088525051` / commit `77c7948`）的唯一原因已定位并修掉：
+> `JwxtLoginResult` 是 `JwxtLoginClient.swift:127` 上的**嵌套** public enum，
+> 测试里写裸名 `JwxtLoginResult(...)` 会报 `cannot find 'JwxtLoginResult' in scope`，
+> 必须写全限定名 `JwxtLoginClient.JwxtLoginResult(...)`。
+> **即那一轮红的是测试代码的写法，不是应用代码本身。**
+>
+> **② 本轮真正为「浏览器能登进去、App 登不进去」改的三处**：
+> 1. `JwxtEncryptor.encryptCode` 的切分单位由「Swift 字符簇」改为 **UTF-16 code unit**，
+>    对齐登录页 JS 的 `code.substring(i, i+1)` 与 Java 的 `String.substring`
+>    （[JwxtEncryptor.swift](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/KebiaoCore/Sources/KebiaoCore/Jwxt/JwxtEncryptor.swift#L41-L47)）。
+>    BMP 内两者一致，**emoji / 组合字符会分叉**。
+> 2. 密码输入框补 `.textInputAutocapitalization(.never)` + `.autocorrectionDisabled()` +
+>    `.textContentType(.password)`，防止键盘（自动大写 / 智能标点）改写密码串。
+> 3. 登录失败文案带出**本次提交的密码位数**与服务端原文片段（不含密码本身），
+>    让下次真机失败能自证是「密码串被改过」还是「服务端判密码错」
+>    （[JwxtLoginClient.swift](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/KebiaoCore/Sources/KebiaoCore/Jwxt/JwxtLoginClient.swift#L182-L184) / [:214-224](file:///c:/Users/Pansy/TREA/IOS%20KEBIAO/KebiaoCore/Sources/KebiaoCore/Jwxt/JwxtLoginClient.swift#L214-L224)）。
+>
+> **③ 你要求的「再自测一次」已做，且不是靠推理**：
+> - **算法级（真 JS 引擎当 oracle）**：把真服务器登录页 `real-index.html:535-545` 的循环体
+>   **原样**放进 Windows 自带的 JScript 引擎（`cscript`）里跑，再与「新 Swift 实现」的等价模型
+>   做大样本差分：**4028 例、0 处分叉**（其中 2223 例带动代理项、2204 例带组合标记；
+>   394 例的唯一差异来自「落单代理项 → U+FFFD」的规范化，而这正是浏览器按 WHATWG 规则
+>   序列化表单数据的行为）。同一个 oracle 也复现了原有 6 条手推向量的**全部**期望值 ——
+>   即「手推的两条转录」与「真 JS 引擎」三方一致。
+>   脚本：[js-ref.js](file:///c:/Users/Pansy/AppData/Local/Temp/kebiao-ci/js-ref.js)、
+>   [selftest_encrypt.py](file:///c:/Users/Pansy/AppData/Local/Temp/kebiao-ci/selftest_encrypt.py)。
+> - **把 oracle 结果钉进 CI**：新增 `testMatchesRealServerJSEngineVectors`，
+>   14 条由真 JS 引擎**产出**（不是我手推）的对照向量 —— 覆盖真实形态账号密码、emoji、
+>   组合字符、CJK、NBSP、空格 / 制表符、`scode` 为空 / 过短、`sxh` 过短 / 含非数字、
+>   `code` 长度 20 / 21 / 34 边界 —— 并**按 UTF-16 code unit 比较**，
+>   避免 Swift 的 canonical equivalence（`é` 与 `e + U+0301` 判等）把组合字符上的真实差异吃掉。
+>   ✅ 该提交 `5c96af5` 的 run `39091001796` **三个 job 全部 success**
+>   （补记于 2026-10-18：当时此处写作「尚在进行中」，CI 跑完后已回填，不是事后改口）。
+> - **产物级**：从 ① 的绿 run 取 artifact 解包核验 ——
+>   `Kebiao-unsigned.ipa` **1,244,136 B**，
+>   SHA256 `5003AE81839E06CECF493F0798EAC4E4C703B911D17CC3CC18F542F827826C51`，
+>   已覆盖固定交付路径 `c:\Users\Pansy\TREA\IOS KEBIAO\Kebiao-unsigned.ipa`。
+>   在主二进制 `Payload/Kebiao.app/Kebiao`（2,209,608 B）里**按字节**搜到本轮新增的 6 个诊断串
+>   （`本次提交的密码位数=`@0xB12E0、`服务端原文「`@0xB1303、`服务端判定账号或密码错误`@0xB1270、
+>   `未取到加密参数`@0xB1210、`被跳回登录页`@0xB11E0、`此密码为学校抢课网站密码`@0xAF170），
+>   并带**阴性对照**（一个本轮不可能存在的哨兵串 → 确认为 absent），
+>   证明这次搜索**有区分力**，不是「不管搜什么都命中」。
+>   `Info.plist` 里 `NSAppTransportSecurity` 恰为
+>   `{NSExceptionDomains: {jwgl.xihang.com.cn: {NSExceptionAllowsInsecureHTTPLoads: true, NSIncludesSubdomains: true}}}`
+>   —— **没有**开 `NSAllowsArbitraryLoads`（没有为图省事放开全部明文）。
+>
+> **④ 仍然没有验证、也不主张已经验证的**：**真机登录是否成功**。本机是 Windows，
+> 没有 Xcode / 模拟器 / Swift 工具链，**无法在本地复现真机登录**。本轮能证明的只有三件事：
+> 「加密算法与真 JS 引擎 0 处分叉」「新 IPA 包内确实含本轮改动」「CI 的编译与断言全绿」。
+> 真机上的登录结果仍以你手机上的实际表现为准；若仍失败，请把失败弹窗文案（现在会带出
+> 「本次提交的密码位数=…」与「服务端原文「…」」）发我，那两项就是下一步定位的入口。
+>
+> **诚实提示（第八次更新，2026-10-18 · 覆盖上面第七次）**：本轮修掉「登录被判成功、
+> 抓课表却拿到 jsxsd 登录页」的真根因。根因 / 修复 / 验证状态分开写，不混为一谈：
+>
+> **① 根因（有原始证据，不是猜）**：真机截图 `status=200 title=登录 len=18942 hasTimetableId=false`
+> 里的那个 18942 字符页，在真服务器上**实测**就是**未认证**的 jsxsd 页 —— 假账号逐跳取证：
+> `GET https://jwgl.xihang.com.cn/` → 18482（title=登录）、
+> `POST /Logon.do?method=logon`（错账号）→ 18501（正文「该帐号不存在或密码错误」）、
+> `GET /jsxsd/framework/xsMainV.htmlx`（未认证）→ **18942 + title=登录 + 正文多出「请先登录系统」**。
+> 结论：登录这一侧被我们判成了成功，但 **`jsxsd` 侧的会话从来没建立**。
+> 对照 recon doc §2.6 抄录的安卓源码（`QiangzhiJwxtParser.java:118-123`）：选课入口网关
+> **真正 GET 的是 `xsMainV.jsp`**（Referer = 入口页 `xsrkxz.htmlx`，`timetableReferer` 记为那个 `.jsp`）。
+> 本工程早先的实现 GET 的是入口页 `xsrkxz.htmlx` 本身、referer 也记成它 ——
+> **「进入首页」那一跳从来没发过**，这就是根因。
+> （顺带排除了三条错误假设：ATS 明文拦截、http/https 会话不共享、密码串被键盘改写。
+> 其中 http/https 假设被真服务器证据否掉：`http://` 根路径 302 到 `https://`，两个 scheme 同一后端。）
+>
+> **② 修复（commit `7457b2c`，已推送）**：
+> `passCourseSelectionGatewayIfNeeded` 改为 GET `xsMainV.jsp`（Referer = `xsrkxz.htmlx`、带原版 UA），
+> `timetableReferer` 记为该 `.jsp` 地址；触发条件对齐 `:108-110` 逐字条件；
+> `finishLogin` 的收尾跳 `xsMainV.htmlx` 若仍是登录页则**如实报 `titleRejected`**，
+> 不再把「假成功」甩给后面抓课表那一跳（此前用户只会看到误导性的「教务系统会话已失效」）。
+> 新增 2 条回归测试：用 `URLProtocol` 桩记录每跳 URL/Referer，锁定
+> 「必须 GET `.jsp` 且入口页不被当目标」与「收尾跳仍是登录页时不得判成功」。
+>
+> **③ CI 状态（先撞账号侧硬门槛，恢复后已转绿）**：run `39096428065`（commit `7457b2c`）
+> 第 1 次 attempt **三个 job 全部 fail，且一个 step 都没跑** —— `runner_id=0`、`steps=[]`、5 秒内结束。
+> check-run annotation 原文：*"The job was not started because recent account payments have failed
+> or your spending limit needs to be increased."* 原因是仓库当时是 **private**：
+> 免费私有仓库每月 2000 分钟，而 **macOS runner 按 10× 计费**，当天多次 macOS 构建把额度用尽。
+> 已把 `pansy023/pansy` 改为 **public**（公开仓库的 GitHub 托管 runner 含 macOS、免费且不限时长）
+> 并重跑，**attempt 2 三个 job 全部 success、0 个非 success 步骤**：
+> - `KebiaoCore 单元测试` 6/6 步 —— 日志里 `[274/274]` 表示 **274 条用例全部被执行**，
+>   整份日志无任何失败行；
+> - `生成工程并编译 iOS App` 10/10 步；
+> - `App 单元测试 + iPhone 模拟器 XCUITest` 15/15 步（含末尾闸门
+>   「测试未全部通过即让工作流失败」= success，即断言级无失败）。
+>
+> 两条新回归测试在 job 日志里各自出现 1 次
+> （`testGatewayHandoffRequestsXsMainVJspAndUsesItAsReferer`、
+> `testGatewayBranchFailsWhenMainFrameIsStillTheLoginPage`），即**确实被执行**，不是只写在文件里。
+>
+> **④ 产物级自测（从 attempt 2 的 artifact 解包核验，不是推断）**：`Kebiao-unsigned.ipa`
+> **1,243,950 B**，SHA256 `23C9AF886B0B2E9959D47329209DAF274850C946562B91B7CE42881123D3BC60`，
+> 已覆盖固定交付路径 `c:\Users\Pansy\TREA\IOS KEBIAO\Kebiao-unsigned.ipa`。
+> 主二进制 `Payload/Kebiao.app/Kebiao`（2,210,640 B）里按字节搜到本轮**新增**的字面量
+> `/jsxsd/framework/xsMainV.jsp`@`0xB1400` —— 上一版构建里**不可能**有它，
+> 这是本轮改动的判别位；同时 `/jsxsd/framework/xsrkxz.htmlx`@`0xB13E0`、
+> `被跳回登录页`@`0xB1460` 仍在。阴性对照（本轮不可能存在的哨兵串）确认为 **ABSENT**，
+> 说明这次搜索有区分力，不是「搜什么都命中」。
+> `Info.plist` 的 `NSAppTransportSecurity` 仍恰为
+> `{NSExceptionDomains: {jwgl.xihang.com.cn: {NSExceptionAllowsInsecureHTTPLoads: true, NSIncludesSubdomains: true}}}`，
+> **没有** `NSAllowsArbitraryLoads`（没有为图省事放开全部明文）。
+>
+> **⑤ 仍然没有验证、也不主张已经验证的**：**真机登录是否成功**。本机是 Windows，
+> 没有 Xcode / 模拟器 / Swift 工具链，换 CI 通道也改变不了这一点。
+> 「CI 绿」只证明「能编译 + 断言过」，**不等于**「你真机上能登进去」。真机结果以你手机实际表现为准。
+>
+> **诚实提示（第六次更新，2026-10-17 23:58 · 已被上面第七次覆盖）**：run `39046318485`（commit `5578acd`）
 > **三个 job 全部 success**（`KebiaoCore 单元测试` 6/6 步、`生成工程并编译 iOS App` 10/10 步、
 > `App 单元测试 + iPhone 模拟器 XCUITest` 15/15 步，含末尾闸门步骤
 > 「测试未全部通过即让工作流失败」= success，即断言级无失败）。本轮数字全部由助手调 GitHub REST API
