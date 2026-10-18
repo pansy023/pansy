@@ -143,6 +143,63 @@
 > 没有 Xcode / 模拟器 / Swift 工具链，换 CI 通道也改变不了这一点。
 > 「CI 绿」只证明「能编译 + 断言过」，**不等于**「你真机上能登进去」。真机结果以你手机实际表现为准。
 >
+> 
+> **诚实提示（第九次更新，2026-10-18 · 覆盖上面第八次；本轮只改「设置页转场」的呈现方式，与登录无关）**：
+> 用户要求把「课表主页 → 设置页」做成 Apple 原生式的连续空间转场：**以左上角齿轮按钮为起点圆形铺开、
+> 返回时沿同一条几何路径反向收拢**。本轮**没有**碰任何登录 / 抓课表 / 存储逻辑。
+>
+> **① 实现（commit `3b653c9` 起，最终 `a6017d04`）**：
+> - 新增 `apps/Kebiao/Views/SettingsTransition.swift`：`SettingsReveal`（progress / contentVisible /
+>   interactive 三态）、`SettingsRevealCircle`（圆心 + 起始 / 终止半径）、`SettingsRevealOverlay`
+>   （圆形遮罩扩张 + 转场途中的点击闸门）、`SettingsPageHost`（自带圆形返回键的设置页宿主）。
+> - 改写 `RootView.swift`：齿轮不再是 `NavigationLink` push，而变成浮层。**起点由按钮自己量出来**
+>   （`GearFramePreferenceKey`，不是硬编码坐标）；展开用 0.55s 临界阻尼弹簧（`bounce: 0`，无回弹），
+>   内容是滞后 0.16s 淡入 + 从下方 10pt 归位；收拢走同一条几何；`accessibilityReduceMotion`
+>   打开时退化成一次 0.22s 整体淡入。**主页全程不卸载**，所以返回后周次 / 滚动位置 / 课程数据原样保留。
+> - 新增 `apps/KebiaoUITests/SettingsTransitionUITests.swift`（3 条用例）。
+> - 为什么不是 `NavigationLink` push：圆形铺开要求「起点在按钮上、终点是整屏」，而 push 会把主页整块
+>   换掉（圆形之外必然露黑），还自带一层从右向左位移转场，两层叠在一起必然打架。
+>
+> **② CI 状态（run `39118495101` / commit `a6017d04`）**：**三个 job 全部 success**，
+> 31 项 step **0 个非 success**，含末尾闸门「测试未全部通过即让工作流失败」= success。硬数字取自日志原文：
+> - `KebiaoCore 单元测试`：`[274/274]` —— **274 条全部执行**，日志无任何失败行；
+> - `App 单元测试`：`Executed 3 tests, with 0 failures`；
+> - `XCUITest`：**`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`**
+>   （8 个既有 Suite 一条没红：CourseCRUD 2 / DarkMode 3 / Launch 2 / Persistence 1 /
+>   SettingsControls 6 / WeekNavigation 3，**新增** SettingsTransition 3 —— 全是 passed）。
+>   其中新增 3 条的原文：`testTransitionStartsAtGearButtonAndExpandsOutward` passed (42.744 s)、
+>   `testRapidDoubleTapOpensOneSettingsPageAndKeepsMainScreenState` passed (58.759 s)、
+>   `testReduceMotionStillOpensAndClosesSettings` passed (25.030 s)。
+>   **既有用例没被破坏**这一点尤其重要 —— 它包含「用导航栏返回键退出设置页」那条，
+>   说明把设置页从 push 换成浮层后，返回行为仍然成立。
+>
+> **③ 转场本身的证据（CI 截图 + 像素测量，不是「看代码像是对的」）**：
+> - 转场第一帧的灰色圆盘**正中覆盖左上角齿轮**；沿 +x / +y 两个方向量半径分别 ≈125pt / ≈131pt
+>   （两轴一致 ⇒ 圆心就是按钮本身，不是屏幕中心、也不是从屏幕外飞入）；
+> - 相邻帧相减得到的「新铺开的那一圈」，逐射线量内沿 / 外沿半径，离散度只有 **0～12pt**
+>   （⇒ 是以按钮为圆心的圆环），frame1→frame3 半径 128pt → 182pt 逐步外扩；
+> - 结束态截图与用户给的参考图一致（圆形返回键 +「设置」标题 + 两张卡 + 说明 +「显示选项」开关组），
+>   **无黑边、无空洞、无遮罩残留**。
+> - ⚠️ 但用例**只保留三条核心断言**（第一帧贴住按钮 / 后一帧扩到更远处 / 结束态完整）：上面那些细几何
+>   是**用 CI 导出的截图人工核对**的，不再让测试从像素反推几何 —— 前两轮（run `39109563122`、
+>   `39114847866`）已实测那种断言会随截图往返延迟漂移（两轮延迟差 5 倍以上，薄厚从 32pt 掉到 <12pt），
+>   不可靠。这条取舍是 2026-10-18 经用户确认后做的。
+>
+> **④ 产物级自测（从本轮 artifact 解包核验）**：`Kebiao-unsigned.ipa` **1,273,747 B**，
+> SHA256 `62BF0672A38A01B069C230E02BE03C8A6B6CAD87EA4BC6CC5A62CBA7B6980AD0`，
+> 已覆盖固定交付路径 `c:\Users\Pansy\TREA\IOS KEBIAO\Kebiao-unsigned.ipa`。
+> 主二进制 `Payload/Kebiao.app/Kebiao`（2,334,960 B）里搜到**本轮新增**的字面量
+> `KebiaoTransitionSlowdown`@`0xB7390`、`KebiaoForceReduceMotion`@`0xB73B0`、`settings.nav.back`@`0xB7B90`
+> —— 上一版构建里不可能有它们，是本轮改动的判别位；`被跳回登录页`@`0xB8AD0` 仍在；
+> 阴性对照（本轮不可能存在的哨兵串）确认为 **ABSENT**。`Info.plist` 的 ATS 仍恰为域名级例外，
+> **没有** `NSAllowsArbitraryLoads`。
+> （补充口径：`tt.nav.settings` 在字节搜索里是 ABSENT —— 它是 15 字节短字符串，Swift 会内联进代码
+> 而不是放进数据段；这不代表功能缺失，同一轮 20 条 XCUITest 全靠它定位并全部通过。）
+>
+> **⑤ 仍然没有验证的**：转场在**真机**上的实际观感（手感、是否掉帧）与真机开关「减弱动态效果」的效果。
+> 本机是 Windows，没有 Xcode / 模拟器 / Swift 工具链 —— 只能给 CI 的模拟器证据 + 截图。
+> 若真机上觉得时长 / 曲线 / 不透明度不合适，改的是 `RootView` 顶部那几个时间常量，说一声即可。
+>
 > **诚实提示（第六次更新，2026-10-17 23:58 · 已被上面第七次覆盖）**：run `39046318485`（commit `5578acd`）
 > **三个 job 全部 success**（`KebiaoCore 单元测试` 6/6 步、`生成工程并编译 iOS App` 10/10 步、
 > `App 单元测试 + iPhone 模拟器 XCUITest` 15/15 步，含末尾闸门步骤
@@ -552,7 +609,14 @@ t = 29.27s Waiting 30.0s for Any (First Match) to exist  ← 新卡片始终没�
 
 > **这一条我还没有改任何代码、也没有再推送**：修法需要你点头（§6 第 8 条）。
 
-### 4.1 XCUITest 用例清单（17 条；**已执行：17 通过 / 0 失败**）
+### 4.1 XCUITest 用例清单（20 条；**已执行：20 通过 / 0 失败** —— 含轮 9 新增的转场 3 条）
+
+> 轮 9（commit `a6017d04` / run `39118495101`）新增 `SettingsTransitionUITests` 3 条并全部通过：
+> `testTransitionStartsAtGearButtonAndExpandsOutward`（42.744 s，只保留三条核心断言：
+> 第一帧变化贴住齿轮按钮 / 后一帧扩到更远处 / 结束态是完整设置页）、
+> `testRapidDoubleTapOpensOneSettingsPageAndKeepsMainScreenState`（58.759 s）、
+> `testReduceMotionStillOpensAndClosesSettings`（25.030 s）。细几何（圆环离散度、四角覆盖、
+> 无黑边）改用 CI 导出截图人工核对，理由见 §0「第九次更新」③。
 
 > 本节下面那段「16 通过 / 1 失败」是**轮 3 快照**（run `39027985486`）。轮 4（`39035942905`）、
 > 轮 5（`39043320005`）、轮 6（`39046318485`）的真实结果**都是 17/17 全绿**，
@@ -763,17 +827,17 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 
 ## 7. 状态口径（九种状态，**不能互相替代**）
 
-以下「当前」= CI run `39046318485` / commit `5578acd` 的真实结果（**轮 6**）。
+以下「当前」= CI run `39118495101` / commit `a6017d04` 的真实结果（**轮 9**，2026-10-18）。
 
 | 状态 | 当前 |
 | --- | --- |
 | 已完成静态代码检查 | ✅ 是（代码路径逐条读过） |
-| 已完成单元测试（`KebiaoCore`，`swift test`） | ✅ **是**：**267 条**全部执行完（日志跑到 `[267/267]`），整份日志无 failure/error，job = success |
-| 已完成单元测试（App 层，`KebiaoTests`） | ✅ **是**：3 条，0 失败（`** TEST SUCCEEDED **`） |
+| 已完成单元测试（`KebiaoCore`，`swift test`） | ✅ **是**：**274 条**全部执行完（日志跑到 `[274/274]`），整份日志无 failure/error，job = success |
+| 已完成单元测试（App 层，`KebiaoTests`） | ✅ **是**：3 条，0 失败（`Executed 3 tests, with 0 failures`） |
 | 已成功编译 iOS 应用 | ✅ **是**：job「生成工程并编译 iOS App」success |
-| 已在模拟器启动应用 | ✅ **是**：iPhone 模拟器上真实跑完 17 条 XCUITest（630 s） |
-| 已通过 UI 自动化测试 | ✅ **是**：**17/17 全部通过**（`Executed 17 tests, with 0 failures` + `** TEST SUCCEEDED **`）；无残留失败用例 |
-| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1,241,008 B，SHA256 `1931DF3A…38A`） |
+| 已在模拟器启动应用 | ✅ **是**：iPhone 模拟器上真实跑完 20 条 XCUITest（900 s） |
+| 已通过 UI 自动化测试 | ✅ **是**：**20/20 全部通过**（`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`）；闸门步骤 = success，无残留失败用例 |
+| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1,273,747 B，SHA256 `62BF0672…0AD0`） |
 | 已签名 | ❓ 由你完成，助手侧无证据 |
 | 已在真机安装 | ❓ 由你完成，助手侧无证据 |
 | 已在真机运行 | ❓ 由你完成，助手侧无证据 |
@@ -783,6 +847,6 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 > 只要还有用例没通过，就不允许把它当成交付物。当时那条失败落在**改名**那一步
 > （不是更早的删除确认按钮 —— 那 4 条已转绿），根因是**测试清空输入框的方式不确定**
 > （§4.0，两张截图已定案），**不是 App 缺陷**；修法是断言一字不改地改成确定性清空（§6 第 8 条）。
-> **现在（轮 6）闸门步骤本身是 success，17/17 全绿 —— 所以「UI 已通过」这句此刻才成立。**
-> 但口径不变：这仍是**模拟器**验证；**真机**（签名 / 安装 / 教务真实登录 / 通知弹出 / 后台唤醒）
-> 依旧没有证据（§7 表格后三行都是 ❓）。
+> **现在（轮 9）闸门步骤本身是 success，20/20 全绿 —— 所以「UI 已通过」这句此刻才成立。**
+> 但口径不变：这仍是**模拟器**验证；**真机**（签名 / 安装 / 教务真实登录 / 通知弹出 / 后台唤醒
+> / 本轮转场的手感与真机「减弱动态效果」）依旧没有证据（§7 表格后三行都是 ❓）。
