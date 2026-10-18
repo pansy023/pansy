@@ -83,6 +83,13 @@ public final class JwxtLoginClient: @unchecked Sendable {
     public static let sessionKeyPath = "/Logon.do?method=logon&flag=sess"
     /// 验活页固定路径（`login$2.java:232`、`:247`、`:285`、`:321`）。
     public static let mainFramePath = "/jsxsd/framework/xsMainV.htmlx"
+    /// 选课入口页路径 —— **只当 Referer**（`QiangzhiJwxtParser.java:118`）。
+    public static let gatewayEntryPath = "/jsxsd/framework/xsrkxz.htmlx"
+    /// 「进入首页」跳的目标路径（`QiangzhiJwxtParser.java:119`）。
+    ///
+    /// ⚠️ 这一步才是真正把会话带进 `jsxsd` 的那一跳：GET 它、把响应 Cookie 并进会话，
+    /// 并把 `timetableReferer` 记成这个 `.jsp` 地址。少了它，后面所有 `jsxsd` 请求都未认证。
+    public static let gatewayHomePath = "/jsxsd/framework/xsMainV.jsp"
 
     /// 成功判定用的中文串，逐字来自 `login$2.java:227-229`
     /// —— **禁止改动这些字面量**。
@@ -379,6 +386,7 @@ public final class JwxtLoginClient: @unchecked Sendable {
         // `:246-256`：GET 主页，Referer = timetableReferer ?? xsMainV.htmlx，带原版 UA。
         let mainURL = session.secureBaseURL + JwxtLoginClient.mainFramePath
         let referer = session.timetableReferer ?? mainURL
+        var mainBody = ""
         do {
             let main = try await session.send(
                 mainURL,
@@ -390,6 +398,7 @@ public final class JwxtLoginClient: @unchecked Sendable {
                     ]
                 )
             )
+            mainBody = main.body
             for (name, value) in main.cookies { cookies[name] = value }
         } catch {
             return .transportFailure(message: String(describing: error))
@@ -397,6 +406,19 @@ public final class JwxtLoginClient: @unchecked Sendable {
 
         // `:257` / `:294` / `:330`：`this.cookies = mutableMap2`。
         session.mergeCookies(cookies)
+
+        // 收尾跳必须真的落在**已认证**的 `jsxsd` 主页上。若它还是登录页，说明这次「成功」
+        // 是假象（最典型的原因是 `jsxsd` 会话根本没建立 —— 见
+        // `passCourseSelectionGatewayIfNeeded` 的注释），此时必须如实报失败。
+        // 否则上层会继续去抓课表、拿到同一张登录页，最后把误导性的
+        // 「教务系统会话已失效」甩给用户，完全掩盖真实原因。
+        //
+        // 判据与下方兜底分支完全一致（`title == "登录"` 或含 `"Login"`，`login$2.java:240-242`）。
+        let mainTitle = JwxtHTML.title(mainBody)
+        if mainTitle == JwxtLoginClient.Marker.loginTitle
+            || mainTitle.contains(JwxtLoginClient.Marker.loginTitleEnglish) {
+            return .titleRejected(title: mainTitle)
+        }
 
         if let verifiedTitle {
             return .titleVerified(title: verifiedTitle)
@@ -436,18 +458,30 @@ public final class JwxtLoginClient: @unchecked Sendable {
         }
     }
 
-    /// 选课入口网关。
+    /// 选课入口网关（「进入首页」跳）。
     ///
-    /// 与 `QiangzhiJwxtParser.java`（反编译体第 111-137 行）的 `passCourseSelectionGatewayIfNeeded`
-    /// 对应：先看有没有 `xsrkxz` 相关的入口页，再 GET `{base}/jsxsd/framework/xsrkxz.htmlx`
-    /// （仅当 `jsxsd` 出现在传入 URL 里），把 `timetableReferer` 记为跳转后的最终 URL。
+    /// 逐字对应 recon doc §2.6 抄录的 Android 源码（`QiangzhiJwxtParser.java:107-124`）：
+    ///
+    /// ```java
+    /// if (!url.contains("xsrkxz", true))
+    ///     if (!body.contains("xsrkxz", true) && !body.contains("入口选择")
+    ///         && (!body.contains("进入选课") || !body.contains("进入首页"))) return;   // 不触发
+    /// String str2 = getSecureBaseUrl() + "/jsxsd/framework/xsrkxz.htmlx";  // 只当 Referer
+    /// String str3 = getSecureBaseUrl() + "/jsxsd/framework/xsMainV.jsp";   // 真正 GET 的是这个
+    /// Map cookiesLocal = Jsoup.connect(str3).cookies(cookieMap)
+    ///         .header("Referer", str2).header("User-Agent", UA).GET.execute().cookies();
+    /// cookieMap.putAll(cookiesLocal);
+    /// this.timetableReferer = str3;                                        // 供收尾跳与抓课表当 Referer
+    /// ```
+    ///
+    /// ⚠️ **这里曾是本工程最要命的一处错**：早先版本 GET 的是入口页 `xsrkxz.htmlx` 本身，
+    /// 并把 `timetableReferer` 也记成 `xsrkxz.htmlx`。`xsrkxz.htmlx` 只是「入口选择」那一屏，
+    /// **真正把会话带进 `jsxsd` 的是紧接着那一次 `xsMainV.jsp` 跳**。少了这一跳，登录仍会被
+    /// 判成成功（`finalURL` 含 `xsrkxz` → `.selectionGateway`），但 `jsxsd` 侧从未建立认证会话，
+    /// 于是抓课表必然拿到 `jsxsd` 登录页 —— 真机截图里那句
+    /// `status=200 title=登录 len=18942 hasTimetableId=false …` 就是这么来的。
     ///
     /// 返回被采用的 Referer（`nil` 表示没走网关）。
-    ///
-    /// ⚠️ 这里只复刻 recon doc §2 记录到的行为：进入条件为
-    /// `url.contains("jsxsd")`，无匹配则直接返回。原始 `parseCourseSelectionGateway`
-    /// 对响应 HTML 的具体选择器，recon doc 标注为**未取证**，因此这里只保存跳转后的 URL，
-    /// 不去猜任何选择器。
     @discardableResult
     private func passCourseSelectionGatewayIfNeeded(
         loginFinalURL: String,
@@ -455,26 +489,34 @@ public final class JwxtLoginClient: @unchecked Sendable {
         cookies: inout [String: String]
     ) async -> String? {
         let lowered = loginFinalURL.lowercased()
-        // 只有命中选课入口才需要过网关（`:117`：`str.contains("xsrkxz")` 或正文含「入口选择」）。
+        // 触发条件逐字对齐 `:108-110`：url 含 `xsrkxz`，或正文含 `xsrkxz` / 「入口选择」/
+        // （「进入选课」且「进入首页」）。
         let hit = lowered.contains(JwxtLoginClient.Marker.gatewayURL.lowercased())
+            || loginBody.lowercased().contains(JwxtLoginClient.Marker.gatewayURL.lowercased())
             || loginBody.contains(JwxtLoginClient.Marker.gatewayTitle)
+            || (loginBody.contains(JwxtLoginClient.Marker.enterSelection)
+                && loginBody.contains(JwxtLoginClient.Marker.enterHome))
         guard hit else { return nil }
-        // `jsxsd` 出现在 URL 里才继续（原版 `str.contains("jsxsd")` 的等价判断）。
-        guard lowered.contains("jsxsd") else { return nil }
 
-        guard let gatewayURL = session.url("/jsxsd/framework/xsrkxz.htmlx") else { return nil }
+        // `:118-120`：`str2`（入口页）只作 Referer，GET 的目标是 `str3`（`xsMainV.jsp`）。
+        guard let entryPageURL = session.url(JwxtLoginClient.gatewayEntryPath),
+              let homeURL = session.url(JwxtLoginClient.gatewayHomePath) else { return nil }
         do {
             let response = try await session.send(
-                gatewayURL.absoluteString,
+                homeURL.absoluteString,
                 options: JwxtSession.RequestOptions(
                     method: "GET",
-                    headers: ["Referer": loginFinalURL]
+                    headers: [
+                        "Referer": entryPageURL.absoluteString,
+                        "User-Agent": JwxtSession.userAgent,
+                    ]
                 )
             )
             for (name, value) in response.cookies { cookies[name] = value }
-            let referer = response.finalURL?.absoluteString ?? gatewayURL.absoluteString
-            session.setTimetableReferer(referer)
-            return referer
+            // `:122-123`：`timetableReferer = str3`，即 `.jsp` 那个地址本身
+            // （**不是**跟随重定向后的 finalURL —— 原版写死的就是 str3）。
+            session.setTimetableReferer(homeURL.absoluteString)
+            return homeURL.absoluteString
         } catch {
             return nil
         }

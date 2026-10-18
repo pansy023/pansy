@@ -43,4 +43,129 @@ final class JwxtLoginDiagnosticsTests: XCTestCase {
         XCTAssertTrue(diagnostic.contains("13"), "诊断串应带上密码位数，实际：\(diagnostic)")
         XCTAssertTrue(diagnostic.contains("用户名或密码错误"), "诊断串应带上服务端原文，实际：\(diagnostic)")
     }
+
+    // MARK: - 选课入口「进入首页」跳（recon doc §2.6）
+
+    /// 登录响应命中选课入口时，必须 GET `xsMainV.jsp`（**不是**入口页 `xsrkxz.htmlx` 本身），
+    /// 且 `timetableReferer` 必须记成那个 `.jsp` 地址。
+    ///
+    /// 真机截图 `status=200 title=登录 len=18942 hasTimetableId=false` 的根因就是这里：
+    /// 早先版本从没发过这一跳，`jsxsd` 侧因此从未建立认证会话。
+    func testGatewayHandoffRequestsXsMainVJspAndUsesItAsReferer() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [JwxtStubURLProtocol.self]
+
+        let recorder = JwxtRequestRecorder()
+        JwxtStubURLProtocol.setResponder { request in
+            let url = request.url?.absoluteString ?? ""
+            recorder.record(url: url, referer: request.value(forHTTPHeaderField: "Referer"))
+            if url.contains("flag=sess") {
+                // 真服务器实测返回的形状：`scode#sxh`。
+                return (200, Data("h58B979U1618a17P44a7RZ5VbYa5P5nfpQXoa2s#11311111132323322323".utf8))
+            }
+            if url.contains("/Logon.do?method=logon"), request.httpMethod == "POST" {
+                // 登录响应 = 选课入口页（正文含「入口选择」），命中 `login$2.java:229` 分支。
+                return (200, Data(
+                    "<html><head><title>入口选择</title></head><body>进入选课 进入首页</body></html>".utf8
+                ))
+            }
+            // 其余每一跳（首页 / xsMainV.jsp / xsMainV.htmlx）都回一个**非登录页**。
+            return (200, Data(
+                "<html><head><title>学生个人中心</title></head><body>ok</body></html>".utf8
+            ))
+        }
+        defer { JwxtStubURLProtocol.setResponder(nil) }
+
+        let client = JwxtLoginClient(
+            baseURL: UserCredentials.defaultJwxtUrl,
+            configuration: configuration
+        )
+        let result = await client.login(username: "20230001", password: "Abc12345!")
+
+        XCTAssertTrue(result.isLoggedIn, "入口页分支应判为登录成功，实际：\(result.diagnostic)")
+
+        let jsp = UserCredentials.defaultJwxtUrl + JwxtLoginClient.gatewayHomePath
+        let entry = UserCredentials.defaultJwxtUrl + JwxtLoginClient.gatewayEntryPath
+
+        XCTAssertTrue(
+            recorder.urls.contains(jsp),
+            "必须真的 GET \(jsp)；实际请求过：\(recorder.urls)"
+        )
+        XCTAssertTrue(
+            recorder.referers(for: jsp).contains(entry),
+            "GET \(jsp) 的 Referer 必须是入口页 \(entry)"
+        )
+        XCTAssertFalse(
+            recorder.urls.contains { $0.hasSuffix(JwxtLoginClient.gatewayEntryPath) },
+            "入口页只当 Referer，绝不能被当成目标 GET；实际请求过：\(recorder.urls)"
+        )
+        XCTAssertEqual(
+            result,
+            JwxtLoginClient.JwxtLoginResult.selectionGateway(referer: jsp),
+            "`timetableReferer` 必须是 `.jsp` 地址（原版 `QiangzhiJwxtParser.java:123` 写死 str3）"
+        )
+    }
+
+    /// 即使命中入口页分支（曾无条件判「成功」），只要收尾跳拿到的**还是登录页**，
+    /// 就必须如实报失败 —— 不能把问题甩给后面抓课表那一跳、让用户看到误导性的
+    /// 「教务系统会话已失效」。
+    func testGatewayBranchFailsWhenMainFrameIsStillTheLoginPage() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [JwxtStubURLProtocol.self]
+
+        JwxtStubURLProtocol.setResponder { request in
+            let url = request.url?.absoluteString ?? ""
+            if url.contains("flag=sess") {
+                return (200, Data("h58B979U1618a17P44a7RZ5VbYa5P5nfpQXoa2s#11311111132323322323".utf8))
+            }
+            if url.contains("/Logon.do?method=logon"), request.httpMethod == "POST" {
+                return (200, Data(
+                    "<html><head><title>入口选择</title></head><body>进入选课 进入首页</body></html>".utf8
+                ))
+            }
+            if url.hasSuffix(JwxtLoginClient.mainFramePath) {
+                // 收尾跳仍然是 jsxsd 登录页（真机实测 18942 字符、title=登录）。
+                return (200, Data(
+                    "<html><head><title>登录</title></head><body>请先登录系统</body></html>".utf8
+                ))
+            }
+            return (200, Data(
+                "<html><head><title>入口选择</title></head><body>进入选课 进入首页</body></html>".utf8
+            ))
+        }
+        defer { JwxtStubURLProtocol.setResponder(nil) }
+
+        let client = JwxtLoginClient(
+            baseURL: UserCredentials.defaultJwxtUrl,
+            configuration: configuration
+        )
+        let result = await client.login(username: "20230001", password: "Abc12345!")
+
+        XCTAssertFalse(result.isLoggedIn, "收尾跳仍是登录页时不得判成功，实际：\(result.diagnostic)")
+        XCTAssertEqual(result, JwxtLoginClient.JwxtLoginResult.titleRejected(title: "登录"))
+    }
+}
+
+/// 记录桩 `URLProtocol` 收到的每一次请求（URL + Referer），供回归断言使用。
+private final class JwxtRequestRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [(url: String, referer: String?)] = []
+
+    func record(url: String, referer: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.append((url, referer))
+    }
+
+    var urls: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.map { $0.url }
+    }
+
+    func referers(for url: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.filter { $0.url == url }.compactMap { $0.referer }
+    }
 }
