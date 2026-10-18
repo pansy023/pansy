@@ -26,8 +26,29 @@
 | 7 | 第一次审计时全工程 **0 个 `accessibilityIdentifier`** → XCUITest 只能按中文文案定位，改文案就碎。 | **P2** | 已给 57 处关键控件补上（§2） |
 | 8 | `project.yml` 既没有单元测试 target、也没有 UI 测试 target；CI 只跑 `swift test` + 编译，**没有模拟器、没有 XCUITest、没有截图、没有报告**。 | **P2** | 已补 `KebiaoTests`（app-hosted XCTest）+ `KebiaoUITests` target 与 `ui-tests` job（§4） |
 | 9 | 关于「空壳 / 假数据」：设置页控件**普遍是真实绑定 + 已落盘**，不是空壳（10 个 Toggle、5 个 Slider、5 个 Stepper·DatePicker、3 个 TextField 全接 `TimetableStore`）。全工程只有 2 处固定样例且**不参与真实业务**（`SettingsView.cardPreview`、各 `#if DEBUG` 预览）。课表数据只来自 `TimetableStore`，**没有用演示数据冒充抓取结果**。 | — | 保持 |
+| 10 | **本轮新发现的缺陷（源自你截图那句「未获取到课表数据；已保留本地原有课程。」）**：`fetchTimetable` 抓取失败时**静默返回空表**，把「抓取失败」伪装成「本学期没课」；而安卓那套「302 且 `Location` 含 `Login`」的会话失效判据在 iOS 上**永不命中**（实测未认证时服务端对 `/jsxsd/xskb/xskb_list.do` 直接回 **200 + 登录页**），于是会话失效被彻底吞掉。 | **P0** | 已修（§5 阶段 6），并已由轮 6 CI 验证：编译 + 267 条单测（含 4 条新测）+ XCUITest 17/17 全绿 |
 
-> **诚实提示（最新 = 第五次更新，2026-10-17 15:05）**：run `39043320005`（commit `0f30adca`）
+> **诚实提示（最新 = 第六次更新，2026-10-17 23:58）**：run `39046318485`（commit `5578acd`）
+> **三个 job 全部 success**（`KebiaoCore 单元测试` 6/6 步、`生成工程并编译 iOS App` 10/10 步、
+> `App 单元测试 + iPhone 模拟器 XCUITest` 15/15 步，含末尾闸门步骤
+> 「测试未全部通过即让工作流失败」= success，即断言级无失败）。本轮数字全部由助手调 GitHub REST API
+> 自取真实产物得到，不是推断：
+> - `KebiaoCore`：**267 条用例全部执行**（日志 `[N/267]` 跑到 267），**整份日志无任何 failure/error**，job = success（25 s）。
+>   含本轮新增 4 条，索引可见：`[35/267] testFetchTimetableThrowsSessionExpiredInsteadOfReturningEmpty`、
+>   `[36/267] testIsLoginPageDetectsLoginPageBody`、`[40/267] testIsLoginPageReturnsFalseForTimetableBody`、
+>   `[41/267] testParseDoStyleRelaxedFallsBackWhenTableIDIsMissing`。
+> - App 层单元测试（`KebiaoTests`）：**3 passed / 0 failed**，`** TEST SUCCEEDED **`（87 s）。
+> - **XCUITest：17 passed / 0 failed**，`** TEST SUCCEEDED **`（630 s，iPhone 模拟器真启动 App）。
+>   分套件：CourseCRUD 2、DarkMode 3、Launch 2、Persistence 1、SettingsControls 6、WeekNavigation 3。
+> - 本轮改动 = **修掉你截图里「未获取到课表数据；已保留本地原有课程。」背后的真实缺陷**（§5 阶段 6）：
+>   `QiangzhiJwxtParser.fetchTimetable` 由「失败静默返回空表」改为抛 `JwxtFetchError` 并带证据串；
+>   `JwxtTimetableSync` 增加「会话失效 → 重新登录再抓一次」的自愈重试；新增宽松兜底解析。
+> - `Kebiao-unsigned-ipa` 已解出并覆盖工程根目录同名文件：**1,241,008 B**，
+>   SHA256 `1931DF3AD517536147765024D72B0F0281665C8396C4E858D83FE8792E6CD38A`
+>   （artifact `Kebiao-unsigned-ipa`，id 12105602528，包内仅 1 个 `.ipa`）。
+> - **本文 §4 / §5 阶段 4 / §6 第 8 条 / §7 引用块里凡写「16/17」「1 条未通过」「CI 此刻是红的」的地方，一律作废，以本行为准。**
+>
+> **诚实提示（第五次更新，2026-10-17 15:05）**：run `39043320005`（commit `0f30adca`）
 > **三个 job 全部 success**：`生成工程并编译 iOS App` 10/10 步、`KebiaoCore 单元测试` 6/6 步、
 > `App 单元测试 + iPhone 模拟器 XCUITest` 15/15 步（含「测试未全部通过即让工作流失败」这步也是 success，
 > 即断言级无失败）。XCUITest 用例数按 `apps/KebiaoUITests/**` 里 `func test` 统计 = **17**。
@@ -306,13 +327,13 @@ init(store: TimetableStore) {
 
 ---
 
-## 4. 测试与 CI 现状（截至 CI run `39027985486` / commit `a733622`）
+## 4. 测试与 CI 现状（**旧快照**：截至 CI run `39027985486` / commit `a733622`；最新见 §0「第六次更新」= run `39046318485` / commit `5578acd`）
 
 | 项目 | 现状 |
 | --- | --- |
 | **App 层单元测试（App-hosted XCTest）** | `apps/KebiaoTests/AppEnvironmentTests.swift`，3 条用例，用 `@testable import Kebiao` 测 App 层（`swift test` 覆盖不到的那部分）。**已真实执行：3 passed / 0 failed**（CI 里 `** TEST SUCCEEDED **`），P0-1 的回归防线成立。 |
-| `KebiaoCore` 单元测试 | 13 个测试文件、**263 条用例**。**已真实执行：263 passed / 0 failed**（CI job `KebiaoCore 单元测试` = success）。 |
-| **XCUITest** | `apps/KebiaoUITests/` 7 个文件、**17 条用例**。**已真实执行：16 passed / 1 failed**。唯一失败是 `CourseCRUDUITests#testCreateEditAndDeleteCourseIsReflectedOnTimetable` 的**改名断言**（`KebiaoUITestCase.swift:453`）。**根因已定案：测试侧清空输入框的方式不确定（`field.tap()` 落在输入框中心 ⇒ 光标不在末尾 ⇒ 退格只删掉半段，新名与旧名残留拼接），不是 App 缺陷**，见 §4.0。 |
+| `KebiaoCore` 单元测试 | 13 个测试文件。**轮 6 已真实执行：267 条全部执行完、无失败**（日志 `[N/267]` 跑到 267，job = success）。（下表原本写 263 —— 那是轮 3 快照；轮 6 新增了 4 条 `JwxtTimetableParserTests` 用例。） |
+| **XCUITest** | `apps/KebiaoUITests/` 7 个文件、**17 条用例**。**轮 6 已真实执行：17 passed / 0 failed**，日志原文 `Executed 17 tests, with 0 failures` + `** TEST SUCCEEDED **`（630 s，iPhone 模拟器真启动 App）。<br>（下表原本写「16 passed / 1 failed」—— 那是轮 3 快照，失败是 `CourseCRUDUITests#testCreateEditAndDeleteCourseIsReflectedOnTimetable` 的改名断言，**根因定案为测试侧清空输入框的方式不确定、非 App 缺陷，已在轮 4 转绿**，见 §4.0。） |
 | `project.yml` | 已含 `KebiaoTests`（`type: bundle.unit-test`，显式 `TEST_HOST`/`BUNDLE_LOADER`）+ `KebiaoUITests`（`type: bundle.ui-testing`、`TEST_TARGET_NAME: Kebiao`）两个 target、scheme 的 test 配置，以及 App target 的 `ENABLE_TESTABILITY: YES`（Debug）。**CI 证明这套配置可用**（app-hosted 单测与 UI 测试都真的跑起来了）。既有 `Kebiao` target 与 `KebiaoCore` package **未改动**。 |
 | CI | `ui-tests` job：装 xcodegen → `xcodegen generate` → `simctl` 挑运行时版本最高的 iPhone（挑不到就 `::error::` 退出）→ 分两步跑 `only-testing:KebiaoTests` 与 `:KebiaoUITests` → `if: always()` 汇总两份 `xcresult` → 上传报告/日志/失败截图 → **末尾闸门步骤**：任一层不是 success 就让 job 明确失败。**本轮闸门确实拦住了交付**（job 结果 = failure，闸门步骤 = failure），未出现「测试挂了但 CI 是绿的」。 |
 | iOS App 编译 | ✅ **已发生**：job `生成工程并编译 iOS App` = success（含本轮全部改动）。 |
@@ -322,7 +343,7 @@ init(store: TimetableStore) {
 | 真机安装 / 运行 | 由用户自签后自行验证，助手侧**无证据**。 |
 | 本轮 IPA | ✅ artifact `Kebiao-unsigned-ipa`（1.2 MB，`app-build` job 产出）。**未签名**，签名与安装由用户完成。 |
 
-### 4.0 仍未通过的 1 条用例（**先看这里**）
+### 4.0 轮 3 快照里「仍未通过的 1 条用例」（**已作废**：轮 4 / 5 / 6 都是 17/17 全绿，本节保留作复盘）
 
 | 用例 | 失败断言 | 说明 |
 | --- | --- | --- |
@@ -416,25 +437,29 @@ t = 29.27s Waiting 30.0s for Any (First Match) to exist  ← 新卡片始终没�
 
 > **这一条我还没有改任何代码、也没有再推送**：修法需要你点头（§6 第 8 条）。
 
-### 4.1 XCUITest 用例清单（17 条，已执行：**16 通过 / 1 失败**）
+### 4.1 XCUITest 用例清单（17 条；**已执行：17 通过 / 0 失败**）
 
-各 suite 实测结果（CI run `39027985486`）：
+> 本节下面那段「16 通过 / 1 失败」是**轮 3 快照**（run `39027985486`）。轮 4（`39035942905`）、
+> 轮 5（`39043320005`）、轮 6（`39046318485`）的真实结果**都是 17/17 全绿**，
+> 即下表里 `CourseCRUDUITests` 那条 failure **已作废**。以 §0「第六次更新」为准。
 
-| suite | 结果 |
+各 suite 实测结果（**轮 6：run `39046318485`，`** TEST SUCCEEDED **`，630 s，日志原文 `Executed 17 tests, with 0 failures`**）：
+
+| suite | 结果（轮 6） |
 | --- | --- |
 | `DarkModeUITests` | **3 tests, 0 failures** ✅ |
 | `SettingsControlsUITests` | **6 tests, 0 failures** ✅ |
-| `CourseCRUDUITests` | 2 tests, **1 failure**（`testCreateEditAndDeleteCourseIsReflectedOnTimetable` 的改名那一步） |
-| `LaunchUITests` | **2 tests, 0 failures** ✅（上一轮那条失败的已转绿） |
-| `PersistenceUITests` | **1 test, 0 failures** ✅（上一轮那条失败的已转绿） |
-| `WeekNavigationUITests` | **3 tests, 0 failures** ✅（上一轮那条失败的已转绿） |
+| `CourseCRUDUITests` | **2 tests, 0 failures** ✅（轮 3 那条改名失败：轮 4 起已转绿） |
+| `LaunchUITests` | **2 tests, 0 failures** ✅ |
+| `PersistenceUITests` | **1 test, 0 failures** ✅ |
+| `WeekNavigationUITests` | **3 tests, 0 failures** ✅ |
 
-下表各用例的**真实结果**：只有 1 条未通过 ——
-`testCreateEditAndDeleteCourseIsReflectedOnTimetable`（新增 / 改名 / 删除三步里的**改名**）；
-**其余 16 条全部通过**。这条的失败原因**不是**上一轮那个（上一轮的 4 条已全部转绿）；
-它是本轮**新暴露**的一站（`KebiaoUITestCase.swift:453`，改名后新卡片未出现），
-**根因已定案 = 测试侧清空输入框的方式问题、非 App 缺陷**（两张截图证据见 §4.0）。
-之前版本写的「未执行」一律以此为准。
+**17 条用例全部通过，无残留失败。** 下表是全部用例清单（覆盖关系不变）：
+
+> **轮 3 旧文本（保留作复盘，结论已作废）**：只有 1 条未通过 ——
+> `testCreateEditAndDeleteCourseIsReflectedOnTimetable` 的**改名**那一步；
+> **根因已定案 = 测试侧清空输入框的方式问题、非 App 缺陷**（两张截图证据见 §4.0），
+> 已按该修法在轮 4 转绿。
 
 | 文件 | 用例 | 覆盖用户要求的 |
 | --- | --- | --- |
@@ -539,6 +564,28 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
     两处不再各算一遍）；详情行改为纯文字「时间 …／地点 〔楼名〕 教室／老师 …」，去掉系统图标。
     **✅ 已实现，并已由轮 5 CI 真实编译 + XCUITest 验证**。**真机视觉待你安装后确认**。
 
+### 阶段 6（教务同步抓取失败不再静默，轮 6）
+
+18. **P0 修复**（对应你截图那句「未获取到课表数据；已保留本地原有课程。」）：
+    `QiangzhiJwxtParser.fetchTimetable` 由 `async -> [Course]` 改成 `async throws -> [Course]`。
+    会话失效改为**按正文判定**（新增 `isLoginPage(body:finalURL:location:)`：先看最终 URL / `Location`，
+    再看有无 `id="timetable"` / `Table1` / `kbcontent` 这些真课表特征，最后才认登录表单特征
+    `Logon.do?method=logon` / `userAccount`）；两种风格都落空时抛
+    `JwxtFetchError.pageStructureUnsupported`。两类错误都**带证据串**
+    （`status` / `<title>` / 正文长度 / 三个特征串），不再把「抓取失败」伪装成「本学期没课」。
+    另新增 `parseDoStyleRelaxed` 兜底：`table#timetable` 未命中时遍历所有 `table`，
+    属**严格超集**（只在原版选择器返回空时才启用，不可能改变原本能解析成功的结果）。
+    **✅ 已实现，并已由轮 6 CI 真实编译 + 267 条单测（含 4 条新测）+ XCUITest 17/17 验证。**
+    **真机上失败原因是否可读，待你下次点「刷新课表」后回读提示（我这边无真机证据）。**
+19. **同步层自愈重试**：`JwxtTimetableSync.fetchFromJwxt` 外层捕 `JwxtFetchError.sessionExpired`
+    → **重新登录后再抓一次**（`attempt(jwxtUrl:credentials:)` 每次新建 `JwxtSession`，与原版一致）；
+    `JwxtSyncError.loginFailed` 的文案前缀**逐字未改**（「登录教务系统失败，请检查账号密码（诊断：…）」）。
+    **✅ 已实现，并已由轮 6 CI 验证**（登录路径既有用例全绿，无回归）。
+20. **为何原版判据在 iOS 上是死代码**（实测，2026-10）：未认证时 `GET /jsxsd/xskb/xskb_list.do`
+    直接返回 **200 + 登录页**（`<title>登录</title>`，无 302、无 `Location`），而原版判据是
+    「最终 URL 或 `Location` 含 `Login`」→ **永不命中** → 会话失效被静默吞掉。
+    这条差异已登记在 `QiangzhiJwxtParser.swift` 文件头「有意差异 4」。
+
 ---
 
 ## 6. 需要你做的事
@@ -585,42 +632,42 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
    - 背景图从相册选择后是否正常显示；
    - 深色模式在真机上的实际观感；
    - 后台自动同步是否真的被唤醒（iOS 不保证，需要真机 + 时间观察）。
-8. **（唯一待你点头的事）改名那 1 条失败的收口**。
-   - **证据已取到（选项 A 已由我在你读完文档前做完，只读、未推送、未改代码）**：
-     下载本轮 artifact `Kebiao-uitest-results`（135 MB），核对了两张截图 ——
+8. ~~**（唯一待你点头的事）改名那 1 条失败的收口**~~ **已解决**（你已批准 → 已推送 → 已由轮 4 CI 验证）：
+   - 证据（当时已取到，只读、未改代码）：artifact `Kebiao-uitest-results`（135 MB）里两张截图 ——
      改名前的卡片把 20 字符**完整**渲染（无省略号）；改名后的卡片以新名字开头**却多出省略号**，
-     说明落库的名字比新名字更长，是「新名 + 旧名残留尾巴」的拼接串。
-     **结论：测试侧清空输入框的方式问题，不是 App 缺陷**（§4.0）。
-   - **剩下要你点头的只有一件事**：把 `renameCourse` 的清空方式改成确定性的写法 ——
-     先在输入框**最右端**点一下（光标确定性地落在文本末尾），再逐字退格；
-     **断言一字不改**（仍然是「改名后必须出现新名字卡片、旧名字卡片必须消失」）。
-     改完**推送 → 跑轮 4 CI**，预期 17/17；若万一还是红，那就是 App 缺陷，我会回头查 App 侧。
-   - **你只需回一句「可以推」**（或「先别推」）。在你点头前我不动代码、不推送。
+     说明落库的名字是「新名 + 旧名残留尾巴」的拼接串。
+     结论：**测试侧清空输入框的方式问题，不是 App 缺陷**（§4.0）。
+   - 处置：`renameCourse` 的清空方式改为**确定性写法** —— 先在输入框**最右端**点一下
+     （光标确定性地落在文本末尾），再逐字退格；**断言一字不改**
+     （仍然是「改名后必须出现新名字卡片、旧名字卡片必须消失」）。
+   - 结果：commit `ba308f6` → run `39035942905`（轮 4）**17/17 转绿**；轮 5、轮 6 均维持 17/17。
+   - **此处不再有待你点头的事项。**
 
 
 ---
 
 ## 7. 状态口径（九种状态，**不能互相替代**）
 
-以下「当前」= CI run `39027985486` / commit `a733622` 的真实结果。
+以下「当前」= CI run `39046318485` / commit `5578acd` 的真实结果（**轮 6**）。
 
 | 状态 | 当前 |
 | --- | --- |
 | 已完成静态代码检查 | ✅ 是（代码路径逐条读过） |
-| 已完成单元测试（`KebiaoCore`，`swift test`） | ✅ **是**：263 条全部执行完（日志跑到 `[263/263]`），job = success |
+| 已完成单元测试（`KebiaoCore`，`swift test`） | ✅ **是**：**267 条**全部执行完（日志跑到 `[267/267]`），整份日志无 failure/error，job = success |
 | 已完成单元测试（App 层，`KebiaoTests`） | ✅ **是**：3 条，0 失败（`** TEST SUCCEEDED **`） |
 | 已成功编译 iOS 应用 | ✅ **是**：job「生成工程并编译 iOS App」success |
-| 已在模拟器启动应用 | ✅ **是**：iPhone 17 模拟器上真实跑完 17 条 XCUITest |
-| 已通过 UI 自动化测试 | ❌ **否（部分通过）**：**16/17** 通过；唯一失败的 1 条是 `CourseCRUDUITests` 的**改名断言**（`KebiaoUITestCase.swift:453`），**根因已定案 = 测试侧清空输入框的方式问题、非 App 缺陷**（§4.0） |
-| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1.2 MB） |
+| 已在模拟器启动应用 | ✅ **是**：iPhone 模拟器上真实跑完 17 条 XCUITest（630 s） |
+| 已通过 UI 自动化测试 | ✅ **是**：**17/17 全部通过**（`Executed 17 tests, with 0 failures` + `** TEST SUCCEEDED **`）；无残留失败用例 |
+| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1,241,008 B，SHA256 `1931DF3A…38A`） |
 | 已签名 | ❓ 由你完成，助手侧无证据 |
 | 已在真机安装 | ❓ 由你完成，助手侧无证据 |
 | 已在真机运行 | ❓ 由你完成，助手侧无证据 |
 
 > 「用例写好」不是「测试通过」；反过来，「CI 绿了」也不等于「功能可用」——
-> 本项目 CI 此刻就是**红的**（闸门步骤故意让它失败），这正是它该有的样子：
-> 只要还有用例没通过，就不允许把它当成交付物。
-> 但要说清楚**红在哪**：这一条失败落在**改名**那一步（不是上一轮的删除确认按钮 —— 那 4 条已转绿）。
-> 该步之前的链路（点旧卡片 → 更多 → 编辑页带出旧名）日志里都走通了；
-> 「改名后新卡片出现」这一句没过，**原因是测试清空输入框的方式不确定**（§4.0，已由两张截图定案），
-> **不是 App 缺陷**。把这个测试写法修好并跑绿之前，**仍然不能说「UI 已通过」**。
+> **轮 3 的时候**本项目 CI 是红的（闸门步骤故意让它失败），这正是它该有的样子：
+> 只要还有用例没通过，就不允许把它当成交付物。当时那条失败落在**改名**那一步
+> （不是更早的删除确认按钮 —— 那 4 条已转绿），根因是**测试清空输入框的方式不确定**
+> （§4.0，两张截图已定案），**不是 App 缺陷**；修法是断言一字不改地改成确定性清空（§6 第 8 条）。
+> **现在（轮 6）闸门步骤本身是 success，17/17 全绿 —— 所以「UI 已通过」这句此刻才成立。**
+> 但口径不变：这仍是**模拟器**验证；**真机**（签名 / 安装 / 教务真实登录 / 通知弹出 / 后台唤醒）
+> 依旧没有证据（§7 表格后三行都是 ❓）。
