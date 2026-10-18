@@ -24,6 +24,10 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
     /// 那边改了这里必须一起改，否则下面的时长等待会失真。
     private static let revealSeconds: TimeInterval = 0.55
 
+    /// 三帧之间的间隔（秒）。sleep 是为了把采样时刻**钉死**：截图往返延迟本身不可控
+    /// （两轮 CI 实测差了 5 倍以上），不睡的话三帧可能全挤在动画最开头那一小段里。
+    private static let frameGapSeconds: TimeInterval = 0.7
+
     override func setUpWithError() throws {
         // 不走 `super`：父类的 `setUpWithError` 会用**不带**减速参数的启动参数起 App，
         // 而这里的用例都需要自己那套参数，所以自己启动一次（其余流程与父类一致）。
@@ -41,11 +45,11 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
     /// 断言依据（全部是像素采样，不是看代码猜）：
     /// - 与点击前的基线相比，第一帧就出现变化，且变化区域**紧贴齿轮按钮**
     ///   （按钮中心 50pt 内就有变化）⇒ 转场真的发生，且起点落在按钮上；
-    /// - 把**相邻两帧**相减，得到的是「这一小段时间里新铺开的那一圈」：
-    ///   所有变化点到按钮中心的距离挤在一个窄带里（实测 124→157pt、153→184pt）
-    ///   ⇒ 新铺开的区域是**以按钮为圆心的圆环**，不是从屏幕中心或屏幕外长出来的；
+    /// - 把**相邻两帧**相减，得到的是「这一小段时间里新铺开的那一圈」。对 32 条射线
+    ///   分别量这一圈的内沿 / 外沿半径：它们必须互相吻合（实测离散度只有 0～12pt）
+    ///   ⇒ 新铺开的区域是**以按钮为圆心的圆环**；圆心若不在按钮上，这个离散度会是几百 pt；
     /// - 圆环的内沿与外沿都逐帧往外走 ⇒ 是连续扩张，不是跳变；
-    /// - 最后一帧的外沿仍远小于「按钮到屏幕最远角」的距离 ⇒ 还没铺满整屏。
+    /// - 最后一帧的半径仍远小于「按钮到屏幕最远角」的距离 ⇒ 还没铺满整屏。
     func testTransitionStartsAtGearButtonAndExpandsOutward() {
         let entry = app.buttons["tt.nav.settings"]
         XCTAssertTrue(entry.waitForExistence(timeout: defaultTimeout), "主界面找不到设置入口 tt.nav.settings")
@@ -55,9 +59,16 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         let baseline = app.screenshot()
 
         entry.tap()
-        // 连拍三帧：不做任何 sleep，靠截图自身的往返延迟自然分开。
-        let frames = [app.screenshot(), app.screenshot(), app.screenshot()]
-        for (index, shot) in frames.enumerated() {
+        // 三帧之间**显式 sleep**：截图自身的往返延迟是会变的（两轮 CI 实测差了 5 倍以上），
+        // 不睡的话三帧可能全挤在动画最开头那一小段里，「这一圈铺开了多少」就没有意义了。
+        var frames: [XCUIScreenshot] = []
+        for index in 0..<3 {
+            if index > 0 {
+                RunLoop.current.run(until: Date().addingTimeInterval(Self.frameGapSeconds))
+            }
+            frames.append(app.screenshot())
+        }
+        for index in frames.indices {
             attachScreenshot("transition-frame-\(index + 1)")
         }
 
@@ -81,14 +92,18 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         for region in vsBaseline {
             XCTAssertGreaterThan(region.probeCount, 0, "点击后没有任何像素变化：转场没有发生")
         }
-        // ① 起点落在按钮上：转场刚出现时，变化区域紧贴齿轮按钮。
+        // ① 起点落在按钮上：转场刚出现时，变化区域紧贴齿轮按钮，而且这时还没铺满。
         XCTAssertLessThanOrEqual(
             vsBaseline[0].nearest, 50,
             "第一帧的变化区域没有贴住齿轮按钮（最近 \(vsBaseline[0].nearest)pt）"
         )
+        XCTAssertLessThan(
+            vsBaseline[0].farthest, diagonal * 0.9,
+            "第一帧就已经铺到屏幕最远角附近（\(vsBaseline[0].farthest)pt / 对角 \(diagonal)pt）"
+        )
 
-        // ② 相邻两帧相减 = 「这一小段时间里新铺开的那一圈」。圆环必须是**以按钮为圆心的正圆环**
-        //    （所有变化点离按钮中心的距离挤在一个窄带里），而且内沿、外沿都逐帧往外走。
+        // ② 相邻两帧相减 = 「这一小段时间里新铺开的那一圈」。逐条射线量它的内沿 / 外沿：
+        //    32 条射线上量出来的半径必须互相吻合 ⇒ 这一圈是**以按钮为圆心的圆环**。
         var rings: [ChangedRegion] = []
         for index in 0..<(frames.count - 1) {
             guard let ring = changedRegion(
@@ -104,25 +119,34 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         }
         XCTAssertEqual(rings.count, frames.count - 1, "相邻帧比较的组数不对")
         for (index, ring) in rings.enumerated() {
-            XCTAssertGreaterThan(
-                ring.probeCount, 0,
-                "第 \(index + 1)→\(index + 2) 帧之间没有任何变化：展开是跳变的，不是连续的"
+            let label = "第 \(index + 1)→\(index + 2) 帧"
+            XCTAssertGreaterThan(ring.probeCount, 0, "\(label)之间没有任何变化：展开是跳变的，不是连续的")
+            XCTAssertGreaterThanOrEqual(
+                ring.rayCount, 6,
+                "\(label)的有效射线只有 \(ring.rayCount) 条，不足以判断圆环形状"
             )
-            XCTAssertGreaterThan(
-                ring.farthest, ring.nearest + 15,
-                "第 \(index + 1)→\(index + 2) 帧的变化是「一薄层」而不是在铺开（近 \(ring.nearest)pt / 远 \(ring.farthest)pt）"
+            // 两轮 CI 真帧实测：内沿离散度 0～12pt、外沿 0～12pt。这里放到 60pt 已是 5 倍余量；
+            // 圆心一旦不在按钮上（例如从屏幕中心长出来），这个值会是几百 pt，必被抓到。
+            XCTAssertLessThanOrEqual(
+                ring.innerSpread, 60,
+                "\(label)的内沿半径散得太开（\(ring.innerSpread)pt）：新铺开的区域不是以按钮为圆心的圆环"
             )
             XCTAssertLessThanOrEqual(
-                ring.farthest, ring.nearest + 90,
-                "第 \(index + 1)→\(index + 2) 帧的变化点到按钮中心的距离跨度太大"
-                + "（\(ring.nearest)…\(ring.farthest)pt）：新铺开的区域不是以按钮为圆心的圆环"
+                ring.outerSpread, 60,
+                "\(label)的外沿半径散得太开（\(ring.outerSpread)pt）：新铺开的区域不是以按钮为圆心的圆环"
             )
         }
-        XCTAssertGreaterThan(rings[1].nearest, rings[0].nearest, "圆环的内沿没有往外走（\(rings[0].nearest)pt → \(rings[1].nearest)pt）")
-        XCTAssertGreaterThan(rings[1].farthest, rings[0].farthest, "圆环的外沿没有往外走（\(rings[0].farthest)pt → \(rings[1].farthest)pt）")
+        XCTAssertGreaterThan(
+            rings[1].medianInner, rings[0].medianInner,
+            "圆环的内沿没有往外走（\(rings[0].medianInner)pt → \(rings[1].medianInner)pt）"
+        )
+        XCTAssertGreaterThan(
+            rings[1].medianOuter, rings[0].medianOuter,
+            "圆环的外沿没有往外走（\(rings[0].medianOuter)pt → \(rings[1].medianOuter)pt）"
+        )
         XCTAssertLessThan(
-            rings[1].farthest, diagonal * 0.85,
-            "已经铺到屏幕最远角附近（\(rings[1].farthest)pt / 对角 \(diagonal)pt）：看起来更像瞬间铺满整屏"
+            rings[1].medianOuter, diagonal * 0.9,
+            "已经铺到屏幕最远角附近（\(rings[1].medianOuter)pt / 对角 \(diagonal)pt）：看起来更像瞬间铺满整屏"
         )
 
         // 转场结束后：内容完整、可点，返回能收拢回主界面。
@@ -244,6 +268,29 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         let nearest: CGFloat
         /// 有变化的**最远**采样点到按钮中心的距离（pt）；没有变化时为 0。
         let farthest: CGFloat
+        /// 逐条射线量到的「内沿半径」（该射线上最靠近圆心的变化点距离）；无变化的射线不进来。
+        let rayInnerRadii: [CGFloat]
+        /// 逐条射线量到的「外沿半径」。
+        let rayOuterRadii: [CGFloat]
+
+        /// 有变化的射线数。
+        var rayCount: Int { rayInnerRadii.count }
+        /// 内沿半径的离散度（最大 − 最小）。**它是不是圆环、圆心在不在按钮上，就看这个值**。
+        var innerSpread: CGFloat { Self.spread(rayInnerRadii) }
+        var outerSpread: CGFloat { Self.spread(rayOuterRadii) }
+        var medianInner: CGFloat { Self.median(rayInnerRadii) }
+        var medianOuter: CGFloat { Self.median(rayOuterRadii) }
+
+        private static func spread(_ values: [CGFloat]) -> CGFloat {
+            guard let low = values.min(), let high = values.max() else { return 0 }
+            return high - low
+        }
+
+        /// 中位数：比平均数抗「被屏幕边缘切掉的少数射线」这种离群值。
+        private static func median(_ values: [CGFloat]) -> CGFloat {
+            guard !values.isEmpty else { return 0 }
+            return values.sorted()[values.count / 2]
+        }
     }
 
     /// 从按钮中心沿 32 个方向、每 25pt 取一个样，找出有变化的最近 / 最远距离。
@@ -260,8 +307,8 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         guard let beforeImage = image(before), let afterImage = image(after) else { return nil }
 
         let rayCount = 32
-        // 步长 12pt：实测「新铺开的那一圈」厚度只有 ~32pt（124.5→156.8），
-        // 步长太粗（例如 25pt）会让这么薄的圆环采样成 1 个点、甚至完全采不到。
+        // 步长 12pt：实测「前后两帧之间新铺开的那一圈」只有 ~12～32pt 厚
+        // （两轮 CI 真帧分别量到 84→96pt、132→156pt），步子迈大了会整条漏采。
         let step: CGFloat = 12
         let maxRadius = max(screen.width, screen.height)
         let pixelsPerPoint = CGFloat(beforeImage.width) / max(screen.width, 1)
@@ -270,11 +317,14 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         var probeCount = 0
         var nearest = CGFloat.greatestFiniteMagnitude
         var farthest: CGFloat = 0
+        var rayInner: [CGFloat] = []
+        var rayOuter: [CGFloat] = []
 
         for ray in 0..<rayCount {
             let angle = 2 * Double.pi * Double(ray) / Double(rayCount)
             let dx = CGFloat(cos(angle))
             let dy = CGFloat(sin(angle))
+            var hits: [CGFloat] = []
             var radius: CGFloat = 0
             while radius <= maxRadius {
                 let point = CGPoint(x: origin.x + radius * dx, y: origin.y + radius * dy)
@@ -295,12 +345,24 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
                 // 不会把「同一画面」误判成变化，却能抓到「底色替换了一层」这种低反差变化。
                 guard delta > 3 else { continue }
                 probeCount += 1
+                hits.append(distance)
                 nearest = min(nearest, distance)
                 farthest = max(farthest, distance)
             }
+            // 这条射线上变化区间的内沿 / 外沿。`hits` 天然按距离递增，首尾就是内外沿。
+            if let inner = hits.first, let outer = hits.last {
+                rayInner.append(inner)
+                rayOuter.append(outer)
+            }
         }
 
-        return ChangedRegion(probeCount: probeCount, nearest: nearest, farthest: farthest)
+        return ChangedRegion(
+            probeCount: probeCount,
+            nearest: nearest,
+            farthest: farthest,
+            rayInnerRadii: rayInner,
+            rayOuterRadii: rayOuter
+        )
     }
 
     /// 整屏平均通道差（0…255）。整图缩成 1×1 再比较，因此与图片上下翻转无关。
