@@ -55,10 +55,12 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
 
         let center = CGPoint(x: buttonFrame.midX, y: buttonFrame.midY)
         let screen = app.frame.size
-        let diagonal = sqrt(
-            pow(max(center.x, screen.width - center.x), 2)
-                + pow(max(center.y, screen.height - center.y), 2)
-        )
+        // 按钮中心到**最远角**的距离。全程用 Double 计算：`CGFloat` 的 `sqrt`/`pow`
+        // 重载不在标准库里，显式转成 Double 最稳。
+        let diagonal = (
+            pow(Double(max(center.x, screen.width - center.x)), 2)
+                + pow(Double(max(center.y, screen.height - center.y)), 2)
+        ).squareRoot()
 
         var regions: [ChangedRegion] = []
         for (index, shot) in frames.enumerated() {
@@ -132,8 +134,15 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
             "转场结束后「返回」按钮仍是不可点状态"
         )
         // 「只开出一个」：同一个入口在无障碍树里只能有一份。
-        XCTAssertEqual(app.buttons["settings.nav.account"].count, 1, "存在多个设置页实例（重复呈现）")
-        XCTAssertEqual(app.buttons["settings.nav.back"].count, 1, "存在多个「返回」按钮（重复呈现）")
+        // 计数必须走 `matching(identifier:)` —— `XCUIElement` 本身没有 `count`。
+        XCTAssertEqual(
+            app.buttons.matching(identifier: "settings.nav.account").count, 1,
+            "存在多个设置页实例（重复呈现）"
+        )
+        XCTAssertEqual(
+            app.buttons.matching(identifier: "settings.nav.back").count, 1,
+            "存在多个「返回」按钮（重复呈现）"
+        )
 
         app.buttons["settings.nav.back"].tap()
         XCTAssertTrue(
@@ -285,7 +294,7 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         pixelsPerPoint: CGFloat,
         side: CGFloat
     ) -> (r: Double, g: Double, b: Double)? {
-        let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        let bounds = CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height))
         let rect = CGRect(
             x: point.x * pixelsPerPoint - side / 2,
             y: point.y * pixelsPerPoint - side / 2,

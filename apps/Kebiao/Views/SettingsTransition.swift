@@ -48,9 +48,11 @@ struct SettingsRevealCircle: Equatable {
 
         // 终止半径取到**最远角**的距离，再乘 1.02 留一点余量：
         // progress = 1 时圆一定盖住整块图层的四个角，不会留背景闪烁 / 黑边 / 透明空洞。
+        // （全程用 Double 算：`CGFloat` 的 `sqrt` 重载不在标准库里，显式转换最稳。）
         let farX = max(center.x, max(layerFrame.width - center.x, 0))
         let farY = max(center.y, max(layerFrame.height - center.y, 0))
-        let end = max(sqrt(farX * farX + farY * farY) * 1.02, start + 1)
+        let diagonal = (Double(farX) * Double(farX) + Double(farY) * Double(farY)).squareRoot()
+        let end = max(CGFloat(diagonal) * 1.02, start + 1)
 
         self.center = center
         self.startRadius = start
