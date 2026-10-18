@@ -281,6 +281,23 @@ struct RootView: View {
             // 只有真的收到 0 才摘掉浮层：否则会在收起动画的最后一帧闪空。
             if settingsReveal?.progress == 0 { settingsReveal = nil }
         }
+        scheduleTeardownSafetyNet()
+    }
+
+    /// 兜底：万一收起动画的 completion 没有回调，也**保证浮层一定会被摘掉**。
+    ///
+    /// 为什么必须有：`progress` 被「打开 → 收起」两次动画接力之后，收起的 completion
+    /// 在 CI 上表现为根本没有回调（run `39132644334`：页面视觉上已经收拢完，
+    /// 浮层却仍留在视图树里，`waitForDisappearance` 一直等到 60s 超时）。
+    /// 摘不掉浮层 = 主界面被一层看不见的遮罩永久挡着 —— 代价太大，不值得只靠一次回调。
+    private func scheduleTeardownSafetyNet() {
+        let delay = Self.collapseSeconds * transitionSlowdown + 0.3
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            if let current = settingsReveal, current.progress == 0 {
+                settingsReveal = nil
+            }
+        }
     }
 
     /// 兜底：万一动画的 completion 没有回调，也不让设置页停在「点不动」的状态。
