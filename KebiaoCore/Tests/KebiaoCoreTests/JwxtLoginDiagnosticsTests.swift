@@ -31,7 +31,10 @@ final class JwxtLoginDiagnosticsTests: XCTestCase {
 
     /// 诊断串必须同时带上「密码位数」与「服务端原文」，否则真机上又变成无法区分的一团。
     func testInvalidCredentialsDiagnosticCarriesPasswordLengthAndSnippet() {
-        let result = JwxtLoginResult.invalidCredentials(
+        // `JwxtLoginResult` 是 `JwxtLoginClient` 的**嵌套**类型（`JwxtLoginClient.swift:127`），
+        // 必须用全限定名，否则编译报 `cannot find 'JwxtLoginResult' in scope`
+        // —— CI run 39088525051 就是这么红的，已实测。
+        let result = JwxtLoginClient.JwxtLoginResult.invalidCredentials(
             passwordLength: 13,
             bodySnippet: "用户名或密码错误"
         )
