@@ -260,6 +260,13 @@ struct AccountSyncSettingsView: View {
             Spacer(minLength: 12)
             SecureField("", text: text)
                 .multilineTextAlignment(.trailing)
+                // 密码是**区分大小写与标点**的：iOS 键盘默认可能把首字母自动大写、
+                // 把直引号换成弯引号、并对输入做自动更正 —— 三者都会让提交上去的
+                // 密码串与真实密码不一致，而圆点密文里完全看不出来。
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                // 支持 iOS 密码自动填充，避免手打引入不可见差异。
+                .textContentType(.password)
                 .accessibilityLabel(title)
                 .accessibilityIdentifier(identifier)
         }

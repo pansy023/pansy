@@ -102,4 +102,30 @@ final class JwxtEncryptorTests: XCTestCase {
             "0ABCDE" + "1234567890123456789"
         )
     }
+
+    // MARK: - 切分单位必须是 UTF-16 code unit（对齐 JS / Java，而不是 Swift 的字符簇）
+
+    /// 非 BMP 字符（emoji）在 JS / Java 里是 **2 个 UTF-16 单元**，在 Swift 的
+    /// `Array(_:)` 里是 **1 个字符**；按字符簇切分会让 encoded 与服务端算出的值分叉
+    /// （2026-10 实测确认：同一密码，两边 encoded 不同 → 服务端判「密码错误」）。
+    ///
+    /// 手工推演（raw = "a😀b" → 4 个单元，scode = "0123456789"，sxh 每位即其数字）：
+    ///   i=0 d=1 → 'a' + "0"，scode 剩 123456789
+    ///   i=1 d=2 → 高代理项 + "12"，scode 剩 3456789
+    ///   i=2 d=3 → 低代理项 + "345"，scode 剩 6789
+    ///   i=3 d=4 → 'b' + "6789"，scode 空
+    /// 末尾 `String(decoding:as:)` 把两个落单代理项各还原成 U+FFFD —— 这正是浏览器把
+    /// 含落单代理项的字符串序列化成表单数据时的行为，因此与服务端收到的字节一致。
+    ///
+    /// 反例（旧实现按 `Array(raw)` 切分）会得到 "a0😀12b345"，两者不同。
+    func testNonBMPCharactersAreSplitByUTF16CodeUnit() {
+        XCTAssertEqual(
+            JwxtEncryptor.encryptCode(
+                raw: "a\u{1F600}b",
+                scode: "0123456789",
+                sxh: "12345678901234567890"
+            ),
+            "a0\u{FFFD}12\u{FFFD}345b6789"
+        )
+    }
 }

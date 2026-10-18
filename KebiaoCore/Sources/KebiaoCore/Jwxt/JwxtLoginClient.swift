@@ -135,7 +135,14 @@ public final class JwxtLoginClient: @unchecked Sendable {
         /// （见文件头「缺陷 A」）。本实现按唯一自洽语义返回成功，并单独标注。
         case titleVerified(title: String)
         /// `body` 含「用户名或密码错误」或「密码错误」（`:228`、`:300-310`）。
-        case invalidCredentials
+        ///
+        /// 两个诊断载荷是**原版没有的**，只为真机排查用，不参与任何业务判定
+        /// （`isLoggedIn` 始终为 false）：
+        /// - `passwordLength`：本次提交的密码**字符位数**，可与输入框里的圆点个数对照，
+        ///   一眼看出密码串是否被键盘改过（多打空格 / 首字母被大写 / 直引号变弯引号）；
+        /// - `bodySnippet`：服务端响应里的可读原文（压空白、截断 60 字符），
+        ///   用来区分「服务端判密码错」与其它失败形态。
+        case invalidCredentials(passwordLength: Int, bodySnippet: String)
         /// `GET /Logon.do?...&flag=sess` 的响应为空、为 `"no"` 或不含 `#`（`:172`、`:337-341`）。
         case sessionKeyMissing
         /// 验活跳的 `<title>` 是「登录」或含「Login」（`:240-242`、`:268-274`）。
@@ -154,7 +161,7 @@ public final class JwxtLoginClient: @unchecked Sendable {
         public var isLoggedIn: Bool {
             switch self {
             case .successWelcome, .selectionGateway, .titleVerified: return true
-            case .invalidCredentials, .sessionKeyMissing, .titleRejected,
+            case .invalidCredentials(_, _), .sessionKeyMissing, .titleRejected,
                  .transportFailure, .unknown: return false
             }
         }
@@ -172,8 +179,9 @@ public final class JwxtLoginClient: @unchecked Sendable {
                 return "登录成功（选课入口页，Referer=\(referer ?? "无")）"
             case let .titleVerified(title):
                 return "登录成功（验活页 title=\(title)）"
-            case .invalidCredentials:
-                return "服务端判定账号或密码错误（响应含「用户名或密码错误」/「密码错误」）"
+            case let .invalidCredentials(passwordLength, bodySnippet):
+                return "服务端判定账号或密码错误（响应含「用户名或密码错误」/「密码错误」）；"
+                    + "本次提交的密码位数=\(passwordLength)；服务端原文「\(bodySnippet)」"
             case .sessionKeyMissing:
                 return "未取到加密参数：/Logon.do?method=logon&flag=sess 响应为空、为 no 或不含 #"
             case let .titleRejected(title):
@@ -197,6 +205,22 @@ public final class JwxtLoginClient: @unchecked Sendable {
             case .emptyUsername: return "用户名为空"
             }
         }
+    }
+
+    /// 服务端响应里的一段可读原文（压空白、截断 60 字符），供登录失败诊断显示。
+    ///
+    /// 只用来让人看懂**服务端到底回了什么**；登录响应里不会包含密码，
+    /// 但仍按最小暴露原则截断，避免把整页 HTML 糊到设置页上。
+    static func responseSnippet(_ body: String) -> String {
+        let text = JwxtHTML.plainText(body)
+        let source = text.isEmpty ? body : text
+        let collapsed = source
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        guard collapsed.count > 60 else { return collapsed }
+        return String(collapsed.prefix(60)) + "…"
     }
 
     // MARK: - 登录主流程
@@ -301,7 +325,11 @@ public final class JwxtLoginClient: @unchecked Sendable {
         // `:228`：明确的口令错误。
         if body.contains(JwxtLoginClient.Marker.badCredentials) || body.contains(JwxtLoginClient.Marker.badPassword) {
             session.mergeCookies(accumulated)
-            return .invalidCredentials
+            // 诊断载荷：密码位数 + 服务端原文片段（两者都不含密码本身）。
+            return .invalidCredentials(
+                passwordLength: password.count,
+                bodySnippet: JwxtLoginClient.responseSnippet(loginResponse.body)
+            )
         }
 
         // `:229`：选课入口页判定。
