@@ -128,4 +128,139 @@ final class JwxtEncryptorTests: XCTestCase {
             "a0\u{FFFD}12\u{FFFD}345b6789"
         )
     }
+
+    // MARK: - 真 JS 引擎对照向量（oracle 不是手推的）
+
+    /// 期望值**不是手推的**，也不是「跑一遍 Swift 实现再把输出抄下来」的，
+    /// 而是把真服务器登录页 `real-index.html:535-545`（取证样本，19800 字节）
+    /// 的循环体**原样**放进 Windows 自带的 JScript 引擎里跑出来的：
+    ///
+    ///     cscript //nologo js-ref.js corpus-vectors.tsv js-vectors-out.tsv
+    ///
+    /// 为什么要这么费劲：上一轮的错误正是「两边都以为一致，其实在非 BMP 上分叉」，
+    /// 而手推的期望值有可能与实现「一起错」。用真 JS 引擎当 oracle，
+    /// 才能把「Swift 实现 == 服务端 JS」这件事钉死在这里，而不是靠推理。
+    ///
+    /// ⚠️ 与手推向量（上面那些）不同，这里**按 UTF-16 code unit 比较**而不是比
+    /// `String`：Swift 的 `==` 走 canonical equivalence，「é」与「e + U+0301」
+    /// 会被判等，用 `String` 比较会把组合字符上的真实差异吃掉。
+    ///
+    /// ⚠️ 唯一刻意的差异：JS 输出里可能出现**落单代理项**，而 Swift 的
+    /// `String(decoding:as:)` 会把它还原成 U+FFFD（这正是浏览器按 WHATWG 规则
+    /// 序列化表单数据时的行为），因此期望值取的是**归一化之后**的形式。
+    /// 归一化规则与 4028 例差分自测（含 2223 例带动代理项、2204 例带组合标记）
+    /// 见 `.../kebiao-ci/selftest_encrypt.py`，结论：与真 JS 引擎 0 处分叉。
+    func testMatchesRealServerJSEngineVectors() {
+        typealias Vector = (label: String, raw: String, scode: String, sxh: String, expected: String)
+        let vectors: [Vector] = [
+            (
+                "real-shaped: 10-digit id + strong 8-char pw",
+                "2023012345%%%p@ssW0rd!23",
+                "0123456789ABCDEFGHIJ",
+                "12345678901234567890",
+                "200122345367890ABCDE1FGHIJ2345%%%p@ssW0rd!23"
+            ),
+            (
+                "real-shaped: 12-digit id + all specials",
+                "202301234567%%%Aa1!%+&=*~!'\"()#@$,",
+                "0123456789ABCDEFGHIJ",
+                "12345678901234567890",
+                "200122345367890ABCDE1FGHIJ234567%%%Aa1!%+&=*~!'\"()#@$,"
+            ),
+            (
+                "astral (emoji) inside the password",
+                "2023012345%%%Aa1!\u{1F600}x",
+                "0123456789ABCDEFGHIJ",
+                "12345678901234567890",
+                "200122345367890ABCDE1FGHIJ2345%%%Aa1!\u{1F600}x"
+            ),
+            (
+                "astral in username, code length under 20",
+                "202301\u{1F680}45%%%Aa1!aa",
+                "0123456789ABCDEFGHIJ",
+                "12345678901234567890",
+                "200122345367890ABCDE1FGHIJ\u{1F680}45%%%Aa1!aa"
+            ),
+            (
+                "combining marks (e + U+0301) x12",
+                "e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}",
+                "0123456789ABCDEFGHIJ",
+                "33333333333333333333",
+                "e012\u{301}345e678\u{301}9ABeCDE\u{301}FGHeIJ\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}"
+            ),
+            (
+                "21-char password: raw length 34 (> 20)",
+                "2023012345%%%Aa1!xxxxxxxxxxxxxxxxxxxxx",
+                "0123456789ABCDEFGHIJ",
+                "12345678901234567890",
+                "200122345367890ABCDE1FGHIJ2345%%%Aa1!xxxxxxxxxxxxxxxxxxxxx"
+            ),
+            (
+                "boundary: code length exactly 20",
+                "12345678901234567890",
+                "0123456789ABCDEFGHIJ",
+                "12345678901234567890",
+                "102123345467895ABCDE6FGHIJ78901234567890"
+            ),
+            (
+                "boundary: code length exactly 21",
+                "12345678901234567890A",
+                "0123456789ABCDEFGHIJ",
+                "12345678901234567890",
+                "102123345467895ABCDE6FGHIJ78901234567890A"
+            ),
+            (
+                "scode empty",
+                "2023012345%%%Aa1!aaaa",
+                "",
+                "12345678901234567890",
+                "2023012345%%%Aa1!aaaa"
+            ),
+            (
+                "sxh shorter than 20",
+                "2023012345%%%Aa1!aaaa",
+                "0123456789ABCDEFGHIJ",
+                "1234567",
+                "200122345367890ABCDE1FGHIJ2345%%%Aa1!aaaa"
+            ),
+            (
+                "sxh with non-digits",
+                "2023012345%%%Aa1!aaaa",
+                "0123456789ABCDEFGHIJ",
+                "12ab5678901234567890",
+                "2001223034567189ABCD2EFGHIJ345%%%Aa1!aaaa"
+            ),
+            (
+                "NBSP (U+00A0) and space/tab inside the password",
+                "2023012345%%%Aa 1!\u{A0}\tzz",
+                "0123456789ABCDEFGHIJ",
+                "12345678901234567890",
+                "200122345367890ABCDE1FGHIJ2345%%%Aa 1!\u{A0}\tzz"
+            ),
+            (
+                "CJK inside the password",
+                "2023012345%%%\u{5BC6}\u{7801}Aa1!",
+                "0123456789ABCDEFGHIJ",
+                "12345678901234567890",
+                "200122345367890ABCDE1FGHIJ2345%%%\u{5BC6}\u{7801}Aa1!"
+            ),
+            (
+                "scode shorter than the digits ask for",
+                "2023012345%%%Aa1!aaaa",
+                "ABCDE",
+                "12345678901234567890",
+                "2A0BC2DE3012345%%%Aa1!aaaa"
+            ),
+        ]
+        XCTAssertEqual(vectors.count, 14, "向量条数变了请同步更新本注释与 CI 说明")
+        for v in vectors {
+            let actual = JwxtEncryptor.encryptCode(raw: v.raw, scode: v.scode, sxh: v.sxh)
+            XCTAssertEqual(
+                Array(actual.utf16),
+                Array(v.expected.utf16),
+                "向量「\(v.label)」与真 JS 引擎结果不一致（按 UTF-16 code unit 比较，"
+                + "避免 Swift 的 canonical equivalence 把组合字符上的差异吃掉）"
+            )
+        }
+    }
 }
