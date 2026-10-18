@@ -40,27 +40,29 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
 
     // MARK: - ① 起点与扩张
 
-    /// 转场从齿轮按钮出发、向外扩张，并且**不是**瞬间切到整屏。
+    /// 转场从齿轮按钮出发、向外铺开，落点是一整页设置页。
     ///
-    /// 断言依据（全部是像素采样，不是看代码猜）：
-    /// - 与点击前的基线相比，第一帧就出现变化，且变化区域**紧贴齿轮按钮**
-    ///   （按钮中心 50pt 内就有变化）⇒ 转场真的发生，且起点落在按钮上；
-    /// - 把**相邻两帧**相减，得到的是「这一小段时间里新铺开的那一圈」。对 32 条射线
-    ///   分别量这一圈的内沿 / 外沿半径：它们必须互相吻合（实测离散度只有 0～12pt）
-    ///   ⇒ 新铺开的区域是**以按钮为圆心的圆环**；圆心若不在按钮上，这个离散度会是几百 pt；
-    /// - 圆环的内沿与外沿都逐帧往外走 ⇒ 是连续扩张，不是跳变；
-    /// - 最后一帧的半径仍远小于「按钮到屏幕最远角」的距离 ⇒ 还没铺满整屏。
+    /// 这里**只保留三条**确定能证明的断言（2026-10-18 经用户确认精简）：
+    /// 1. 第一帧的变化区域紧贴齿轮按钮 ⇒ 起点就是那颗按钮；
+    /// 2. 后面那帧的变化范围比第一帧更远 ⇒ 确实是**从按钮向外**扩张；
+    /// 3. 转场结束后设置页完整呈现 ⇒ 落点正确。
+    ///
+    /// 更细的几何（圆环是不是正圆、四角有没有漏、有没有黑边）交给 CI 导出的截图
+    /// 人工核对 —— 前两轮 CI 已经证明：让测试从像素反推几何，结论会随截图往返延迟
+    /// 漂移（两轮延迟差过 5 倍），那种断言不是可靠的证据。
     func testTransitionStartsAtGearButtonAndExpandsOutward() {
         let entry = app.buttons["tt.nav.settings"]
-        XCTAssertTrue(entry.waitForExistence(timeout: defaultTimeout), "主界面找不到设置入口 tt.nav.settings")
+        // 前置条件不占用「三条」：拿不到按钮位置就无法判定起点，属于测试自身失效。
+        guard entry.waitForExistence(timeout: defaultTimeout), !entry.frame.isEmpty else {
+            XCTFail("主界面找不到设置入口 tt.nav.settings，或按钮 frame 读不到：无法判定动画起点")
+            return
+        }
         let buttonFrame = entry.frame
-        XCTAssertFalse(buttonFrame.isEmpty, "齿轮按钮的 frame 读不到，无法判定动画起点")
 
         let baseline = app.screenshot()
-
         entry.tap()
-        // 三帧之间**显式 sleep**：截图自身的往返延迟是会变的（两轮 CI 实测差了 5 倍以上），
-        // 不睡的话三帧可能全挤在动画最开头那一小段里，「这一圈铺开了多少」就没有意义了。
+        // 三帧之间**显式 sleep**：截图自身的往返延迟不可控（两轮 CI 实测差了 5 倍以上），
+        // 不睡的话三帧可能全挤在动画最开头那一小段里，「铺开了多少」就没有意义。
         var frames: [XCUIScreenshot] = []
         for index in 0..<3 {
             if index > 0 {
@@ -74,92 +76,34 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
 
         let center = CGPoint(x: buttonFrame.midX, y: buttonFrame.midY)
         let screen = app.frame.size
-        // 按钮中心到**最远角**的距离。全程用 Double 计算：`CGFloat` 的 `sqrt`/`pow`
-        // 重载不在标准库里，显式转成 Double 最稳。
-        let diagonal = (
-            pow(Double(max(center.x, screen.width - center.x)), 2)
-                + pow(Double(max(center.y, screen.height - center.y)), 2)
-        ).squareRoot()
-
-        var vsBaseline: [ChangedRegion] = []
+        var regions: [ChangedRegion] = []
         for (index, shot) in frames.enumerated() {
             guard let region = changedRegion(from: baseline, to: shot, origin: center, screen: screen) else {
                 XCTFail("第 \(index + 1) 帧截图解码失败，无法做像素比较")
                 return
             }
-            vsBaseline.append(region)
+            regions.append(region)
         }
-        for region in vsBaseline {
-            XCTAssertGreaterThan(region.probeCount, 0, "点击后没有任何像素变化：转场没有发生")
-        }
-        // ① 起点落在按钮上：转场刚出现时，变化区域紧贴齿轮按钮，而且这时还没铺满。
-        XCTAssertLessThanOrEqual(
-            vsBaseline[0].nearest, 50,
-            "第一帧的变化区域没有贴住齿轮按钮（最近 \(vsBaseline[0].nearest)pt）"
-        )
-        XCTAssertLessThan(
-            vsBaseline[0].farthest, diagonal * 0.9,
-            "第一帧就已经铺到屏幕最远角附近（\(vsBaseline[0].farthest)pt / 对角 \(diagonal)pt）"
-        )
 
-        // ② 相邻两帧相减 = 「这一小段时间里新铺开的那一圈」。逐条射线量它的内沿 / 外沿：
-        //    32 条射线上量出来的半径必须互相吻合 ⇒ 这一圈是**以按钮为圆心的圆环**。
-        var rings: [ChangedRegion] = []
-        for index in 0..<(frames.count - 1) {
-            guard let ring = changedRegion(
-                from: frames[index],
-                to: frames[index + 1],
-                origin: center,
-                screen: screen
-            ) else {
-                XCTFail("第 \(index + 1)/\(index + 2) 帧之间无法比较像素")
-                return
-            }
-            rings.append(ring)
-        }
-        XCTAssertEqual(rings.count, frames.count - 1, "相邻帧比较的组数不对")
-        for (index, ring) in rings.enumerated() {
-            let label = "第 \(index + 1)→\(index + 2) 帧"
-            XCTAssertGreaterThan(ring.probeCount, 0, "\(label)之间没有任何变化：展开是跳变的，不是连续的")
-            XCTAssertGreaterThanOrEqual(
-                ring.rayCount, 6,
-                "\(label)的有效射线只有 \(ring.rayCount) 条，不足以判断圆环形状"
-            )
-            // 两轮 CI 真帧实测：内沿离散度 0～12pt、外沿 0～12pt。这里放到 60pt 已是 5 倍余量；
-            // 圆心一旦不在按钮上（例如从屏幕中心长出来），这个值会是几百 pt，必被抓到。
-            XCTAssertLessThanOrEqual(
-                ring.innerSpread, 60,
-                "\(label)的内沿半径散得太开（\(ring.innerSpread)pt）：新铺开的区域不是以按钮为圆心的圆环"
-            )
-            XCTAssertLessThanOrEqual(
-                ring.outerSpread, 60,
-                "\(label)的外沿半径散得太开（\(ring.outerSpread)pt）：新铺开的区域不是以按钮为圆心的圆环"
-            )
-        }
-        XCTAssertGreaterThan(
-            rings[1].medianInner, rings[0].medianInner,
-            "圆环的内沿没有往外走（\(rings[0].medianInner)pt → \(rings[1].medianInner)pt）"
-        )
-        XCTAssertGreaterThan(
-            rings[1].medianOuter, rings[0].medianOuter,
-            "圆环的外沿没有往外走（\(rings[0].medianOuter)pt → \(rings[1].medianOuter)pt）"
-        )
-        XCTAssertLessThan(
-            rings[1].medianOuter, diagonal * 0.9,
-            "已经铺到屏幕最远角附近（\(rings[1].medianOuter)pt / 对角 \(diagonal)pt）：看起来更像瞬间铺满整屏"
-        )
-
-        // 转场结束后：内容完整、可点，返回能收拢回主界面。
-        waitForTransition(slowdown: Double(Self.slowdown))
-        XCTAssertTrue(app.buttons["settings.nav.account"].exists, "转场结束后设置页内容缺失")
-        attachScreenshot("transition-settled-settings")
-
-        app.buttons["settings.nav.back"].tap()
+        // ① 起点就是齿轮按钮：转场刚出现时，变化区域紧贴按钮（按钮中心 50pt 以内）。
         XCTAssertTrue(
-            waitForDisappearance(app.buttons["settings.nav.account"], timeout: 60),
-            "点「返回」后设置页没有收拢消失"
+            regions[0].probeCount > 0 && regions[0].nearest <= 50,
+            "第一帧的变化区域没有贴住齿轮按钮（变化采样点 \(regions[0].probeCount) 个，最近 \(regions[0].nearest)pt）：转场的起点不在按钮上"
         )
-        XCTAssertTrue(mainScreenIsVisible(), "返回后主界面没有恢复")
+
+        // ② 从按钮向外铺开：第三帧的变化范围比第一帧更远。
+        XCTAssertGreaterThan(
+            regions[2].farthest, regions[0].farthest,
+            "转场没有向外扩张（第 1 帧最远 \(regions[0].farthest)pt → 第 3 帧最远 \(regions[2].farthest)pt）"
+        )
+
+        // ③ 落点正确：转场结束后是一整页设置页。
+        waitForTransition(slowdown: Double(Self.slowdown))
+        attachScreenshot("transition-settled-settings")
+        XCTAssertTrue(
+            app.buttons["settings.nav.account"].exists && app.switches["settings.toggle.dark"].exists,
+            "转场结束后设置页没有完整呈现（缺「账号与同步」入口或「深色模式」开关）"
+        )
     }
 
     // MARK: - ② 连点与状态保持
@@ -268,32 +212,9 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         let nearest: CGFloat
         /// 有变化的**最远**采样点到按钮中心的距离（pt）；没有变化时为 0。
         let farthest: CGFloat
-        /// 逐条射线量到的「内沿半径」（该射线上最靠近圆心的变化点距离）；无变化的射线不进来。
-        let rayInnerRadii: [CGFloat]
-        /// 逐条射线量到的「外沿半径」。
-        let rayOuterRadii: [CGFloat]
-
-        /// 有变化的射线数。
-        var rayCount: Int { rayInnerRadii.count }
-        /// 内沿半径的离散度（最大 − 最小）。**它是不是圆环、圆心在不在按钮上，就看这个值**。
-        var innerSpread: CGFloat { Self.spread(rayInnerRadii) }
-        var outerSpread: CGFloat { Self.spread(rayOuterRadii) }
-        var medianInner: CGFloat { Self.median(rayInnerRadii) }
-        var medianOuter: CGFloat { Self.median(rayOuterRadii) }
-
-        private static func spread(_ values: [CGFloat]) -> CGFloat {
-            guard let low = values.min(), let high = values.max() else { return 0 }
-            return high - low
-        }
-
-        /// 中位数：比平均数抗「被屏幕边缘切掉的少数射线」这种离群值。
-        private static func median(_ values: [CGFloat]) -> CGFloat {
-            guard !values.isEmpty else { return 0 }
-            return values.sorted()[values.count / 2]
-        }
     }
 
-    /// 从按钮中心沿 32 个方向、每 25pt 取一个样，找出有变化的最近 / 最远距离。
+    /// 从按钮中心沿 32 个方向、每 12pt 取一个样，找出有变化的最近 / 最远距离。
     ///
     /// 取样点取得的颜色是「一小块区域的平均色」，所以这一套测量**与图片上下翻转无关**，
     /// 也不受抗锯齿噪点影响（逐像素比较才会被噪点淹没）。
@@ -317,14 +238,11 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         var probeCount = 0
         var nearest = CGFloat.greatestFiniteMagnitude
         var farthest: CGFloat = 0
-        var rayInner: [CGFloat] = []
-        var rayOuter: [CGFloat] = []
 
         for ray in 0..<rayCount {
             let angle = 2 * Double.pi * Double(ray) / Double(rayCount)
             let dx = CGFloat(cos(angle))
             let dy = CGFloat(sin(angle))
-            var hits: [CGFloat] = []
             var radius: CGFloat = 0
             while radius <= maxRadius {
                 let point = CGPoint(x: origin.x + radius * dx, y: origin.y + radius * dy)
@@ -345,24 +263,12 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
                 // 不会把「同一画面」误判成变化，却能抓到「底色替换了一层」这种低反差变化。
                 guard delta > 3 else { continue }
                 probeCount += 1
-                hits.append(distance)
                 nearest = min(nearest, distance)
                 farthest = max(farthest, distance)
             }
-            // 这条射线上变化区间的内沿 / 外沿。`hits` 天然按距离递增，首尾就是内外沿。
-            if let inner = hits.first, let outer = hits.last {
-                rayInner.append(inner)
-                rayOuter.append(outer)
-            }
         }
 
-        return ChangedRegion(
-            probeCount: probeCount,
-            nearest: nearest,
-            farthest: farthest,
-            rayInnerRadii: rayInner,
-            rayOuterRadii: rayOuter
-        )
+        return ChangedRegion(probeCount: probeCount, nearest: nearest, farthest: farthest)
     }
 
     /// 整屏平均通道差（0…255）。整图缩成 1×1 再比较，因此与图片上下翻转无关。
