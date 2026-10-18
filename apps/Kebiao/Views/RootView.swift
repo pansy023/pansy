@@ -52,6 +52,13 @@ struct RootView: View {
     private static let pressSeconds: TimeInterval = 0.08
     private static let pressRecoverySeconds: TimeInterval = 0.10
     private static let gearPressScale: CGFloat = 0.96
+    /// 「防连点窗口」：设置页刚出现的这段时间里忽略「返回」。
+    ///
+    /// 为什么需要它：工具栏那颗返回键与齿轮在**屏幕上的同一坐标**，而 CI 实测
+    /// （run `39109889672`）证明转场途中它就已经能被点到。真实用户「双击齿轮」的
+    /// 第二下落在 ~0.3s 内，必须被这一窗口吃掉，否则会变成「刚打开又被自己关掉」。
+    /// 过了这一窗口再点返回，就是**中途反悔** —— 按原路立即退回，不等到展开动画跑完。
+    private static let reverseGuardSeconds: TimeInterval = 0.35
     /// 导航栏 leading 圆形按钮的默认布局（仅在几何量不到时兜底）。
     private static let navigationBarHeight: CGFloat = 44
     private static let leadingInset: CGFloat = 16
@@ -217,6 +224,7 @@ struct RootView: View {
 
         settingsReveal = SettingsReveal(
             origin: origin,
+            openedAt: Date(),
             progress: 0,
             contentVisible: false,
             interactive: false
@@ -252,14 +260,18 @@ struct RootView: View {
 
     /// 收起设置页：圆形沿原路径收拢回齿轮按钮。
     ///
-    /// 下面这道 `interactive` 闸门**真的在生效**，不是摆设：CI run 39109889672 的
-    /// 日志实测 —— 展开动画还在跑的时候，导航栏里那颗「返回」按钮就已经能被 XCUITest
-    /// 点到了（工具栏按钮由 UIKit 托管，SwiftUI 的 `allowsHitTesting` 拦不住它），
-    /// 而那一击正是被 `reveal.interactive` 挡下的。少了它，动画途中的连点就会变成
-    /// 「刚打开又被关掉」。
+    /// **展开跑完**再点返回是正常退出；**跑到一半**点返回是「中途反悔」——
+    /// 一样按同一条几何路径立即收拢，不用等动画跑完。
+    ///
+    /// 唯一的例外是下面那道 `reverseGuardSeconds` 窗口（理由见该常量的说明）。
+    /// 它必须留在**状态**这一层，不能只靠命中测试：CI run `39109889672` 实测，
+    /// 转场途中那颗导航栏按钮就已经能被 XCUITest 点到（工具栏由 UIKit 托管，
+    /// SwiftUI 的 `allowsHitTesting` 拦不住它），那一击正是被这里的判断挡下的。
     private func closeSettings() {
-        // 动画没跑完时的点击（含连点）一律忽略：不会重复导航。
-        guard let reveal = settingsReveal, reveal.interactive else { return }
+        // `progress > 0`：已经在收拢途中（模型值已到 0）再点就不重复触发。
+        guard let reveal = settingsReveal, reveal.progress > 0 else { return }
+        // 防连点窗口内忽略：那颗返回键与齿轮在同一坐标上，真实双击会落在这里。
+        guard Date().timeIntervalSince(reveal.openedAt) >= Self.reverseGuardSeconds else { return }
 
         settingsReveal?.interactive = false
         withAnimation(collapseContentAnimation) { settingsReveal?.contentVisible = false }

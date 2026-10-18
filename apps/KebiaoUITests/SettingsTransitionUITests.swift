@@ -108,7 +108,16 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
 
     // MARK: - ② 连点与状态保持
 
-    /// 连点两下齿轮：只开出一个设置页；返回后主界面照旧可交互、周次没被重置。
+    /// 连点两下齿轮：只能开出一个设置页；转场途中点返回能**原路立即退回**；
+    /// 回到主界面后周次没被重置、翻周仍然可用。
+    ///
+    /// ⚠️ 为什么不是「连点两下后页面必须还开着」：防连点窗口（`reverseGuardSeconds`）
+    /// 只有 0.35s，而 **XCUITest 两次 `tap()` 的最小间隔实测是 1.8～2.1s**
+    /// （每次 tap 都要先解析元素、再等 App 空闲；run `39114847866` 的日志原文：8.42s → 10.26s）。
+    /// 也就是说测试**造不出真正的「双击」**，却完全能造出「转场途中又点了一下」。
+    /// 所以这里验的是能确定性造出来的那一支：第二下落在展开动画途中 → 必须原路退回，
+    /// 且全程只存在一个设置页实例（「不会重复打开多个设置页面」）。
+    /// 「0.35s 内的双击被窗口吃掉」这一支无法用 XCUITest 造，只能靠代码审查 + 真机手感确认。
     func testRapidDoubleTapOpensOneSettingsPageAndKeepsMainScreenState() {
         let entry = app.buttons["tt.nav.settings"]
         XCTAssertTrue(entry.waitForExistence(timeout: defaultTimeout), "主界面找不到设置入口 tt.nav.settings")
@@ -116,16 +125,13 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
 
         entry.tap()
         // 第二下刻意打在**同一屏幕坐标**上：此刻浮层已经盖住按钮，
-        // 用坐标点击才能确定性地制造「转场途中连点」这个场景。
+        // 用坐标点击才能确定性地制造「转场途中又点了一下」这个场景。
         entry.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
 
         XCTAssertTrue(
             app.buttons["settings.nav.account"].waitForExistence(timeout: defaultTimeout),
             "连点两下后设置页没有打开"
         )
-        // ⚠️ 必须等展开动画真的跑完再点返回，否则点击会被转场闸门吃掉（见
-        // `waitForTransition` 的说明）。这一步故意**不**用 `isHittable` 判断。
-        waitForTransition(slowdown: Double(Self.slowdown))
         // 「只开出一个」：同一个入口在无障碍树里只能有一份。
         // 计数必须走 `matching(identifier:)` —— `XCUIElement` 本身没有 `count`。
         XCTAssertEqual(
@@ -137,11 +143,15 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
             "存在多个「返回」按钮（重复呈现）"
         )
 
+        // 等过了防连点窗口、但**仍在展开动画途中**（减速 40 倍 → 展开约 22 秒）——
+        // 这一击是「中途反悔」，必须原路立即退回，而不是等动画跑完。
+        RunLoop.current.run(until: Date().addingTimeInterval(1.2))
         app.buttons["settings.nav.back"].tap()
         XCTAssertTrue(
             waitForDisappearance(app.buttons["settings.nav.account"], timeout: 60),
-            "点「返回」后设置页没有收拢消失"
+            "转场途中点「返回」没有原路退回（设置页没有收拢消失）"
         )
+        XCTAssertTrue(mainScreenIsVisible(), "返回后主界面没有恢复")
 
         // 主界面必须真的拿回交互：翻周要能改周次。
         // 若还压着一层遮罩，这一击会被吃掉、周次纹丝不动。

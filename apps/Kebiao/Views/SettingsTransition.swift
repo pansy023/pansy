@@ -16,6 +16,9 @@ import SwiftUI
 /// （`RootView` 的 `GearFramePreferenceKey`），不是硬编码坐标。
 struct SettingsReveal: Equatable {
     let origin: CGRect
+    /// 点开那一刻的时间戳。用于「防连点窗口」：工具栏那颗返回键与齿轮在**屏幕上的同一坐标**，
+    /// 真实用户双击齿轮的第二下会落进那个窗口，必须被忽略（见 `RootView.closeSettings`）。
+    let openedAt: Date
     var progress: CGFloat
     var contentVisible: Bool
     var interactive: Bool
