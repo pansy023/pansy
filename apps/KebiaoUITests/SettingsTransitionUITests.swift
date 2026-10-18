@@ -13,8 +13,12 @@ import XCTest
 /// 每组断言证明什么、不证明什么，逐条写在用例里 —— 不夸大结论。
 final class SettingsTransitionUITests: KebiaoUITestCase {
 
-    /// 转场减速倍数：把 0.55s 的展开拉成约 11s，好让截图稳定落在中间帧上。
-    private static let slowdown = 20
+    /// 转场减速倍数：把 0.55s 的展开拉成约 22s。
+    ///
+    /// 取 40 而不是「够用就好」：CI 上一次 `app.screenshot()` 的往返延迟是不确定的
+    /// （实测可能到秒级），倍数留大一些，三帧才**必然**都落在「还没铺满」的那一段里，
+    /// 中间帧断言才不会变成看运气。
+    private static let slowdown = 40
 
     override func setUpWithError() throws {
         // 不走 `super`：父类的 `setUpWithError` 会用**不带**减速参数的启动参数起 App，
