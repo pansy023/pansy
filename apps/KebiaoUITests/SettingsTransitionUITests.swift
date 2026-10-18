@@ -106,55 +106,52 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
         )
     }
 
-    // MARK: - ② 连点与状态保持
+    // MARK: - ② 中途反悔与状态保持
 
-    /// 连点两下齿轮：只能开出一个设置页；转场途中点返回能**原路立即退回**；
-    /// 回到主界面后周次没被重置、翻周仍然可用。
+    /// 设置页打开到一半时点「返回」：必须沿原路收拢回主界面；全程只有一个
+    /// 设置页实例；回来后周次没被重置、翻周仍然可用。
     ///
-    /// ⚠️ 为什么不是「连点两下后页面必须还开着」：防连点窗口（`reverseGuardSeconds`）
-    /// 只有 0.35s，而 **XCUITest 两次 `tap()` 的最小间隔实测是 1.8～2.1s**
+    /// ⚠️ 与「双击齿轮」的区别：防连点窗口（`RootView.reverseGuardSeconds`）只有 0.35s，
+    /// 而 **XCUITest 两次 `tap()` 的最小间隔实测是 1.8～2.1s**
     /// （每次 tap 都要先解析元素、再等 App 空闲；run `39114847866` 的日志原文：8.42s → 10.26s）。
-    /// 也就是说测试**造不出真正的「双击」**，却完全能造出「转场途中又点了一下」。
-    /// 所以这里验的是能确定性造出来的那一支：第二下落在展开动画途中 → 必须原路退回，
-    /// 且全程只存在一个设置页实例（「不会重复打开多个设置页面」）。
-    /// 「0.35s 内的双击被窗口吃掉」这一支无法用 XCUITest 造，只能靠代码审查 + 真机手感确认。
-    func testRapidDoubleTapOpensOneSettingsPageAndKeepsMainScreenState() {
+    /// 也就是说测试**造不出真正的「双击」**——「0.35s 内第二击被窗口吃掉」那一支
+    /// 只能靠代码审查 + 真机手感确认。这里验证的是能确定性造出来的那一支：
+    /// 点击落在窗口**之外**、转场**之中** ⇒ 按需求就是「中途反悔」，必须原路退回。
+    ///
+    /// ⚠️ 这条用例同时是「返回键全程可点」的回归测试：run `39135217620` 里，
+    /// 内容层的命中门把转场途中的返回点击挡死（下面那条消失断言 60s 超时、
+    /// tearDown 截图里设置页完整开着），命中门拆除后这里必须稳定通过。
+    func testMidTransitionBackTapReturnsToMainScreenAndKeepsState() {
         let entry = app.buttons["tt.nav.settings"]
         XCTAssertTrue(entry.waitForExistence(timeout: defaultTimeout), "主界面找不到设置入口 tt.nav.settings")
         let weekBefore = weekBadge.label
 
         entry.tap()
-        // 第二下刻意打在**同一屏幕坐标**上：此刻浮层已经盖住按钮，
-        // 用坐标点击才能确定性地制造「转场途中又点了一下」这个场景。
-        entry.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-
+        // 等设置页内容真的出现（证明「打开」已经在进行中）。
+        // 此刻展开动画还在跑（减速 40 倍 → 约 22s）：接下来这一击就是「中途反悔」。
         XCTAssertTrue(
             app.buttons["settings.nav.account"].waitForExistence(timeout: defaultTimeout),
-            "连点两下后设置页没有打开"
+            "点齿轮后设置页没有开始打开"
         )
         // 「只开出一个」：同一个入口在无障碍树里只能有一份。
         // 计数必须走 `matching(identifier:)` —— `XCUIElement` 本身没有 `count`。
-        // ⚠️ 这里断言的是**不超过** 1，不是「恰好 1」：第二次点击落在减速 40 倍的展开动画途中，
-        // 按设计触发「中途反悔」—— 此刻页面正在收拢（run `39127819377` 的截图：圆盘正缩回左上角），
-        // 收拢过程中内容会从无障碍树里消失（实测那次 `settings.nav.back` 计数 = 0）。
-        // 「重复呈现」这类缺陷会把计数推到 2，照样会被抓到这里。
         XCTAssertLessThanOrEqual(
             app.buttons.matching(identifier: "settings.nav.account").count, 1,
             "存在多个设置页实例（重复呈现）"
         )
-        XCTAssertLessThanOrEqual(
-            app.buttons.matching(identifier: "settings.nav.back").count, 1,
-            "存在多个「返回」按钮（重复呈现）"
-        )
 
-        // 等过了防连点窗口、但**仍在展开动画途中**（减速 40 倍 → 展开约 22 秒）——
-        // 这一击是「中途反悔」，必须原路立即退回，而不是等动画跑完。
-        RunLoop.current.run(until: Date().addingTimeInterval(1.2))
-        app.buttons["settings.nav.back"].tap()
+        // 中途反悔：点返回必须原路退回，而不是等动画跑完、更不是没反应。
+        let back = app.buttons["settings.nav.back"]
+        XCTAssertTrue(back.waitForExistence(timeout: defaultTimeout), "设置页没有出现「返回」按钮")
+        back.tap()
         XCTAssertTrue(
             waitForDisappearance(app.buttons["settings.nav.account"], timeout: 60),
             "转场途中点「返回」没有原路退回（设置页没有收拢消失）"
         )
+
+        // 收拢动画（0.34s × 减速）与浮层摘除兜底（+0.3s）跑完之前，
+        // 主界面外漏区域可能还在遮罩边上 —— 交互断言前按已知时长等它收尾。
+        RunLoop.current.run(until: Date().addingTimeInterval(0.34 * Double(Self.slowdown) + 1.0))
         XCTAssertTrue(mainScreenIsVisible(), "返回后主界面没有恢复")
 
         // 主界面必须真的拿回交互：翻周要能改周次。
@@ -342,10 +339,8 @@ final class SettingsTransitionUITests: KebiaoUITestCase {
     ///
     /// ⚠️ **不能**用 `isHittable` 当信号 —— 这是 CI run 39109889672 实测出来的教训：
     /// 展开动画还在跑（减速 40 倍 → 22 秒）的时候，`settings.nav.back` 就已经报
-    /// `isHittable == true`（导航栏里的工具栏按钮由 UIKit 托管，SwiftUI 的
-    /// `allowsHitTesting` 门挡不住它）。测试于是在动画中途点了返回，而那一击被
-    /// `closeSettings` 的 `interactive` 判断挡下，页面当然没关，白等了 60 秒。
-    /// 所以这里按**已知时长**等：0.55s × 减速倍数 × 1.2 + 0.5s 余量。
+    /// `isHittable == true`（导航栏里的工具栏按钮由 UIKit 托管，可见性判断与
+    /// 内容动画不同步）。所以这里按**已知时长**等：0.55s × 减速倍数 × 1.2 + 0.5s 余量。
     ///
     /// - Parameter slowdown: 这次运行时 App 实际生效的减速倍数。正常用例是
     ///   `Self.slowdown`；「减弱动态效果」那条用例启动时**没有**带减速参数，所以传 1。

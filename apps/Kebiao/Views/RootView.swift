@@ -54,9 +54,9 @@ struct RootView: View {
     private static let gearPressScale: CGFloat = 0.96
     /// 「防连点窗口」：设置页刚出现的这段时间里忽略「返回」。
     ///
-    /// 为什么需要它：工具栏那颗返回键与齿轮在**屏幕上的同一坐标**，而 CI 实测
-    /// （run `39109889672`）证明转场途中它就已经能被点到。真实用户「双击齿轮」的
-    /// 第二下落在 ~0.3s 内，必须被这一窗口吃掉，否则会变成「刚打开又被自己关掉」。
+    /// 为什么需要它：工具栏那颗返回键与齿轮在**屏幕上的同一坐标**，而返回键全程可点
+    /// （命中门已拆，见 `closeSettings`）。真实用户「双击齿轮」的第二下落在 ~0.3s 内，
+    /// 必须被这一窗口吃掉，否则会变成「刚打开又被自己关掉」。
     /// 过了这一窗口再点返回，就是**中途反悔** —— 按原路立即退回，不等到展开动画跑完。
     private static let reverseGuardSeconds: TimeInterval = 0.35
     /// 导航栏 leading 圆形按钮的默认布局（仅在几何量不到时兜底）。
@@ -226,8 +226,7 @@ struct RootView: View {
             origin: origin,
             openedAt: Date(),
             progress: 0,
-            contentVisible: false,
-            interactive: false
+            contentVisible: false
         )
 
         // 先让 `progress = 0` 那一帧真正渲染出来（此刻圆只盖住按钮本身，等于「按钮
@@ -237,25 +236,19 @@ struct RootView: View {
         DispatchQueue.main.async {
             if reduceMotion {
                 // 减弱动态效果：不做圆形铺开，只做一次很短的整体淡入。
-                withAnimation(reduceMotionAnimation, completionCriteria: .logicallyComplete) {
+                withAnimation(reduceMotionAnimation) {
                     settingsReveal?.progress = 1
                     settingsReveal?.contentVisible = true
-                } completion: {
-                    settingsReveal?.interactive = true
                 }
             } else {
-                withAnimation(revealAnimation, completionCriteria: .logicallyComplete) {
+                withAnimation(revealAnimation) {
                     settingsReveal?.progress = 1
-                } completion: {
-                    settingsReveal?.interactive = true
                 }
                 withAnimation(revealContentAnimation) {
                     settingsReveal?.contentVisible = true
                 }
             }
         }
-
-        scheduleInteractionSafetyNet()
     }
 
     /// 收起设置页：圆形沿原路径收拢回齿轮按钮。
@@ -264,16 +257,17 @@ struct RootView: View {
     /// 一样按同一条几何路径立即收拢，不用等动画跑完。
     ///
     /// 唯一的例外是下面那道 `reverseGuardSeconds` 窗口（理由见该常量的说明）。
-    /// 为什么这个判断必须留在**状态**这一层、不能只靠命中测试：CI run `39109889672`
-    /// 的日志里，转场途中（t=17.03s）那颗「返回」按钮**确实被合成了一次点击**，
-    /// 而页面没有关 —— 挡下那一击的正是状态判断，不是命中测试。
+    /// 防连点**只**靠这道状态窗口：早先版本还在内容层上加了 `allowsHitTesting`
+    /// 门（动画跑完前整层不响应），结果把返回键也挡死了 —— CI run `39135217620`
+    /// 的 XCUITest 日志：减速下展开第 6 秒点「返回」没有任何反应，页面开了 60 秒
+    /// 没关。那道门已拆（见 `SettingsTransition.swift`），现在返回键全程可点：
+    /// 窗口内的点击 = 双击第二击（忽略），窗口外的中途点击 = 反悔（立即收拢）。
     private func closeSettings() {
         // `progress > 0`：已经在收拢途中（模型值已到 0）再点就不重复触发。
         guard let reveal = settingsReveal, reveal.progress > 0 else { return }
         // 防连点窗口内忽略：那颗返回键与齿轮在同一坐标上，真实双击会落在这里。
         guard Date().timeIntervalSince(reveal.openedAt) >= Self.reverseGuardSeconds else { return }
 
-        settingsReveal?.interactive = false
         withAnimation(collapseContentAnimation) { settingsReveal?.contentVisible = false }
         withAnimation(collapseAnimation, completionCriteria: .logicallyComplete) {
             settingsReveal?.progress = 0
@@ -296,20 +290,6 @@ struct RootView: View {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             if let current = settingsReveal, current.progress == 0 {
                 settingsReveal = nil
-            }
-        }
-    }
-
-    /// 兜底：万一动画的 completion 没有回调，也不让设置页停在「点不动」的状态。
-    ///
-    /// 这不是替代 completion，而是它的保险：`interactive` 卡在 false 会让整页永久
-    /// 无法点击，代价太大，不值得只靠一次回调。
-    private func scheduleInteractionSafetyNet() {
-        let delay = (Self.revealSeconds + 0.3) * transitionSlowdown
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            if let current = settingsReveal, !current.interactive, current.progress >= 1 {
-                settingsReveal?.interactive = true
             }
         }
     }

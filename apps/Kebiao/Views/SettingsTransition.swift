@@ -2,14 +2,17 @@ import SwiftUI
 
 /// 「课表主页 → 设置页」转场的状态。整段动画**只**由这里的数据驱动。
 ///
-/// 三个字段共用同一条时间线（时间参数集中在 `RootView` 的时间常量里）：
+/// 两个字段共用同一条时间线（时间参数集中在 `RootView` 的时间常量里）：
 /// - `progress`：圆形遮罩的展开进度。0 = 与齿轮按钮等大（只盖住按钮本身），
 ///   1 = 覆盖整屏四角；
-/// - `contentVisible`：设置页内容的淡入开关，比遮罩**略滞后**（重叠，不空等）；
-/// - `interactive`：内容是否接受点击。**动画跑完才置 `true`**，
-///   这样转场途中的连点会被挡下，不会出现「点开一半又被点回去」或重复导航。
-///   ⚠️ 这一位不能省：转场途中的点击算不算数，由这个状态位与
-///   `RootView.closeSettings` 的时间窗口一起把关（实测见那里的说明）。
+/// - `contentVisible`：设置页内容的淡入开关，比遮罩**略滞后**（重叠，不空等）。
+///
+/// 转场途中**不**挡返回键：需求是「动画进行中点击返回应沿当前进度原路退回」，
+/// 所以内容层全程接受点击；「双击齿轮」的第二击由 `RootView.closeSettings`
+/// 里的 `reverseGuardSeconds` 状态窗口吃掉，窗口之外的中途点击就是「中途反悔」。
+/// （早先版本另有一个 `interactive` 标志把内容层命中在动画跑完前整体关掉：
+/// CI run `39135217620` 的 XCUITest 日志证明它把返回键也挡死了 —— 减速下
+/// 展开第 6 秒点返回没有任何反应，页面开了 60 秒没关。该标志已删除。）
 ///
 /// `origin` 是齿轮按钮在**屏幕坐标**（`.global`）里的矩形，由按钮自己量出来
 /// （`RootView` 的 `GearFramePreferenceKey`），不是硬编码坐标。
@@ -20,7 +23,6 @@ struct SettingsReveal: Equatable {
     let openedAt: Date
     var progress: CGFloat
     var contentVisible: Bool
-    var interactive: Bool
 }
 
 /// 一次圆形展开的几何：圆心（遮罩图层的本地坐标）+ 起始 / 终止半径。
@@ -93,8 +95,12 @@ private struct RevealCircleMask: View {
 ///
 /// 图层（从下到上）：
 /// 1. 铺满整屏（含状态栏 / Home 指示器区域）的展开背景 —— 被圆形遮罩裁剪；
-/// 2. 转场途中的点击闸门 —— 动画没跑完时把点击全部吃掉；
+/// 2. 圆外区域的点击闸门 —— 圆形遮罩会把内容层的命中裁剪在圆内，圆**外**的点击
+///    （例如收拢途中逐渐露出的课表、展开途中右上角的「＋」）由这一层接住，
+///    不会穿透下去点主界面；
 /// 3. 设置页内容 —— 同一个圆形遮罩，但布局在**安全区**里，淡入 + 从下方 10pt 归位。
+///    **全程接受点击**：圆心处的返回键从第一帧就在圆内，转场途中点它就是
+///    「中途反悔」（由 `RootView.closeSettings` 的时间窗口区分双击与反悔）。
 ///
 /// 背景与内容刻意分成两层、各自量自己的 `.global` 矩形：`.ignoresSafeArea()` 会把
 /// 子视图的安全区一并吃掉，若把内容放进同一个忽略安全区的容器里，「设置」标题会顶进
@@ -116,14 +122,11 @@ struct SettingsRevealOverlay<Content: View>: View {
         ZStack {
             fullScreenBackground
 
-            if !reveal.interactive {
-                // 纯透明但**参与命中测试**：转场途中的点击在这里被吃掉，
-                // 既不会点到还没铺开的内容，也不会穿透下去点课表。
-                // 转场结束后这一层直接消失，不留任何遮挡或无法点击的残留视图。
-                Color.clear
-                    .contentShape(Rectangle())
-                    .ignoresSafeArea()
-            }
+            // 纯透明但**参与命中测试**：圆外的点击在这里被接住，不会穿透下去点课表。
+            // 它在内容层**下面**：圆内（含返回键）的命中由内容层正常响应，互不妨碍。
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
 
             contentLayer
         }
@@ -171,8 +174,8 @@ struct SettingsRevealOverlay<Content: View>: View {
                 layer.mask(RevealCircleMask(progress: reveal.progress, circle: circle))
             }
         }
-        // 动画跑完之前不接受点击；期间由上面的闸门接管转场途中的点击。
-        .allowsHitTesting(reveal.interactive)
+        // 全程接受点击：遮罩已把命中裁在圆内（圆外由下面的闸门接住），
+        // 圆心处的返回键从第一帧起就可点 —— 「中途点返回 = 原路退回」是需求本身。
     }
 }
 
