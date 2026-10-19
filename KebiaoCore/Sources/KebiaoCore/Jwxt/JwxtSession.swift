@@ -35,10 +35,13 @@ import Foundation
 ///    按 recon doc 的建议做「`Content-Type` charset → UTF-8 → GBK」回落。GBK 用
 ///    `CFStringConvertEncodingToNSStringEncoding` 取，它是 Foundation/CoreFoundation 自带能力，
 ///    不引入依赖。
-/// 2. **重定向**：原版靠 jsoup 自动跟随，再用 `execute.url()` 取最终 URL；过期判断写的是
-///    `statusCode() == 302`（`fetchTimetable$2.java:104`）。recon doc §1.4 指出
-///    URLSession 会把 302 跟掉、该分支在 iOS 上基本不触发，**改用「最终 URL 或 location 含
-///    `Login`」判断会话过期**。本实现按 recon doc 的建议走。
+/// 2. **重定向**：原版靠 jsoup 自动跟随（并**保留沿途下发的 Cookie**），再用 `execute.url()`
+///    取最终 URL；过期判断写的是 `statusCode() == 302`（`fetchTimetable$2.java:104`）。
+///    iOS 这边改由 `send` **自己逐跳跟随**：每一跳先并 `Set-Cookie`、再决定要不要跟，
+///    与 jsoup 的语义一致。为此必须用 `JwxtRedirectBlockingDelegate` 把 `URLSession`
+///    **自己**的自动跟随关掉 —— 否则那一跳的响应（连同 `Set-Cookie`）我们根本看不到，
+///    会话交接会静默断掉（真机实测的「被跳回登录页」就是这么来的，见该委托的注释）。
+///    过期判断仍按 recon doc §1.4 的建议走「最终 URL 或 location 含 `Login`」。
 public final class JwxtSession: @unchecked Sendable {
 
     /// 原版硬编码的 UA（`login$2.java:251-257`、`fetchTimetable$2.java:96-98`）。
@@ -55,6 +58,13 @@ public final class JwxtSession: @unchecked Sendable {
     private let jar: JwxtCookieJar
     private let configuration: URLSessionConfiguration
     private let urlSession: URLSession
+
+    /// 阻止 `URLSession` **自己**跟掉重定向的委托。
+    ///
+    /// ⚠️ 没有它，本类那句「重定向由本方法自己处理」就是**假的** —— `URLSession` 会把 302 跟掉，
+    /// 我们只能看到最后一跳的响应，**重定向那一跳的 `Set-Cookie` 结构性拿不到**。
+    /// 详见 `JwxtRedirectBlockingDelegate` 的注释与文件头第 2 点。
+    private let redirectBlocker = JwxtRedirectBlockingDelegate()
 
     /// 选课入口页 URL。命中选课网关后，它会成为后续请求的 Referer
     /// （`QiangzhiJwxtParser.java:123` 的 `this.timetableReferer = str3`）。
@@ -171,7 +181,8 @@ public final class JwxtSession: @unchecked Sendable {
 
     /// 发出一次请求，并按原版语义累积 Cookie。
     ///
-    /// 重定向由本方法自己处理（`URLSession` 的自动跟随被关掉），原因见文件头第 2 点。
+    /// 重定向由本方法自己处理：每一跳的 `Set-Cookie` 都会先并进罐子，再带着它去下一跳
+    /// （`URLSession` 的自动跟随由 `redirectBlocker` 关掉），原因见文件头第 2 点。
     public func send(_ urlString: String, options: RequestOptions = RequestOptions()) async throws -> Response {
         guard let startURL = URL(string: urlString), let scheme = startURL.scheme?.lowercased(),
               scheme == "http" || scheme == "https" else {
@@ -225,12 +236,19 @@ public final class JwxtSession: @unchecked Sendable {
                 request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             }
 
-            let (data, urlResponse) = try await urlSession.data(for: request)
+            // ⚠️ 必须传 `delegate:` —— 否则 `URLSession` 会**自己**把 302 跟掉，
+            // 我们就只能看到最后一跳的响应，**重定向那一跳的 `Set-Cookie` 会永久丢失**
+            // （`httpShouldSetCookies = false` + `httpCookieStorage = nil` 也意味着
+            // URLSession 不会替我们把那个 Cookie 带到下一跳）。这正是真机上
+            // 「门户登录过了、jsxsd 会话却建立不起来」的原因。
+            let (data, urlResponse) = try await urlSession.data(for: request, delegate: redirectBlocker)
             guard let http = urlResponse as? HTTPURLResponse else {
                 throw JwxtSessionError.notHTTPResponse
             }
 
             let responseCookies = JwxtSession.cookies(from: http)
+            // 先并 Cookie，**再**决定要不要跟 —— 这样重定向那一跳下发的会话 Cookie
+            // 会跟着下一次循环的 `Cookie` 头一起发出去，与 jsoup / 浏览器的行为一致。
             jar.merge(responseCookies)
 
             let location = http.value(forHTTPHeaderField: "Location")
@@ -493,5 +511,45 @@ final class JwxtBox<Value>: @unchecked Sendable {
             defer { lock.unlock() }
             storage = newValue
         }
+    }
+}
+
+/// 阻止 `URLSession` **自己**跟随重定向的委托（返回 `nil` = 不跟）。
+///
+/// ## 为什么必须有它（真机证据，2026-10-19）
+///
+/// 本会话层的 Cookie 是**自己管**的：`httpShouldSetCookies = false`、`httpCookieStorage = nil`、
+/// `httpCookieAcceptPolicy = .never` —— 逐跳的 `Set-Cookie` 全靠 `JwxtSession.send` 的循环
+/// 「读出来 → 并进罐子 → 带进下一跳」。**但这只有在 `URLSession` 不自己跟重定向时才成立**：
+/// 一旦它把 302 跟掉，我们拿到的是**最后一跳**的响应，那一跳（302）的响应头连同它的
+/// `Set-Cookie` 就**结构性拿不到**了；而 URLSession 自己的 Cookie 机制又被我们关掉了，
+/// 于是那个 Cookie 两边都没接住 —— **直接丢失**。
+///
+/// 后果（真机「登录教务系统失败…被跳回登录页」的逐跳轨迹）：
+/// `POST /Logon.do?method=logon` 之后 `final` 已经落在 `/jsxsd/framework/xsrkxz.htmlx`
+/// （说明门户那一关过了），可我们手里只有**那张登录页**发来的 `bzb_jsxsd`（匿名会话），
+/// 服务端在重定向里写给 jsxsd 的会话 Cookie 丢了；此后所有 jsxsd 路径都返回
+/// 同一张 18942 字节的登录页 ⇒ 判成 `titleRejected`。
+///
+/// 对照：Android 的 jsoup 自动跟随重定向时**会保留并带上沿途下发的 Cookie**，所以安卓是通的。
+///
+/// ⚠️ 这里是**实现与注释不一致**的第二处（第一处是 UA 的全量设置）：本类原先的
+/// `send` 注释写着「`URLSession` 的自动跟随被关掉」，但全工程从来没有实现过任何
+/// `URLSessionTaskDelegate` —— 那句话一直只是「意图」。现在把它兑现。
+///
+/// ⚠️ 用 `URLSessionTaskDelegate` 的**经典 completionHandler 形式**（不是 async 形式）：
+/// 它是 Foundation 里真正声明的那条 ObjC 协议方法，`data(for:delegate:)` 一定会调到它。
+final class JwxtRedirectBlockingDelegate: NSObject, URLSessionTaskDelegate {
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        // 交回 nil：不跟随。重定向由 `JwxtSession.send` 的逐跳循环处理，
+        // 那一跳的 `Set-Cookie` 因此能被抓住并带走。
+        completionHandler(nil)
     }
 }

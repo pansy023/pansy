@@ -189,6 +189,98 @@ final class JwxtLoginDiagnosticsTests: XCTestCase {
         XCTAssertFalse(trace.contains("Secret!123"), "轨迹绝不能包含明文密码，实际：\(trace)")
         XCTAssertFalse(trace.lowercased().contains("encoded"), "轨迹绝不能出现 encoded，实际：\(trace)")
     }
+
+    // MARK: - 重定向与会话交接（真机「被跳回登录页」的另一半）
+
+    /// 委托必须**拒绝**跟随重定向。
+    ///
+    /// 为什么这条要被锁住：本会话层的 Cookie 是自己管的（`httpShouldSetCookies = false`、
+    /// `httpCookieStorage = nil`），逐跳的 `Set-Cookie` 靠 `JwxtSession.send` 的循环接住。
+    /// 只要 `URLSession` 自己把 302 跟掉，**那一跳的 `Set-Cookie` 就结构性拿不到**，
+    /// 会话交接静默断掉 —— 真机轨迹里 `POST /Logon.do` 之后 `final` 已经落到
+    /// `/jsxsd/framework/xsrkxz.htmlx`（门户那一关过了），可 jsxsd 侧仍然只返回登录页，
+    /// 根因就是这里。
+    func testRedirectBlockerRefusesToFollowSoPerHopSetCookieStaysVisible() {
+        let delegate = JwxtRedirectBlockingDelegate()
+        let from = URL(string: "https://jwgl.xihang.com.cn/Logon.do?method=logon")!
+        let target = URL(string: "https://jwgl.xihang.com.cn/jsxsd/framework/xsrkxz.htmlx")!
+        let redirect = HTTPURLResponse(
+            url: from,
+            statusCode: 302,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Location": target.absoluteString]
+        )!
+
+        var callbackInvoked = false
+        var handedBack: URLRequest? = URLRequest(url: target)
+        delegate.urlSession(
+            URLSession.shared,
+            task: URLSession.shared.dataTask(with: from),
+            willPerformHTTPRedirection: redirect,
+            newRequest: URLRequest(url: target)
+        ) { request in
+            callbackInvoked = true
+            handedBack = request
+        }
+
+        XCTAssertTrue(callbackInvoked, "委托没有被回调 —— 那就说明 URLSession 会按默认行为把 302 跟掉")
+        XCTAssertNil(handedBack, "必须交回 nil（不跟随）；重定向要留给 JwxtSession.send 自己处理")
+    }
+
+    /// `send` 必须**自己**逐跳跟随重定向，并把**重定向那一跳**下发的 Cookie 带到下一跳。
+    ///
+    /// 这就是 jsoup / 浏览器的行为，也是安卓能过、iOS 过不去的那条链路。
+    func testSendFollowsRedirectManuallyAndCarriesRedirectSetCookie() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [JwxtRedirectStubURLProtocol.self]
+
+        let recorder = JwxtCookieRecorder()
+        let logon = UserCredentials.defaultJwxtUrl + "/Logon.do?method=logon"
+        let landing = UserCredentials.defaultJwxtUrl + "/jsxsd/framework/xsMainV.htmlx"
+
+        JwxtRedirectStubURLProtocol.setResponder { request in
+            let url = request.url?.absoluteString ?? ""
+            recorder.record(url: url, cookie: request.value(forHTTPHeaderField: "Cookie"))
+            if url == logon {
+                // 门户登录成功后的典型形态：302 进 jsxsd，并在这一跳下发 jsxsd 的会话 Cookie。
+                return (
+                    302,
+                    [
+                        "Location": "/jsxsd/framework/xsMainV.htmlx",
+                        "Set-Cookie": "bzb_jsxsd=authed-session; Path=/",
+                    ],
+                    Data()
+                )
+            }
+            return (
+                200,
+                [:],
+                Data("<html><head><title>学生个人中心</title></head><body>欢迎</body></html>".utf8)
+            )
+        }
+        defer { JwxtRedirectStubURLProtocol.setResponder(nil) }
+
+        let session = JwxtSession(baseURL: UserCredentials.defaultJwxtUrl, configuration: configuration)
+        let response = try await session.send(
+            logon,
+            options: JwxtSession.RequestOptions(method: "POST", form: [("userAccount", "20230001")])
+        )
+
+        XCTAssertEqual(response.statusCode, 200, "302 应被逐跳跟随到 200")
+        XCTAssertEqual(
+            response.finalURL?.absoluteString, landing,
+            "最终 URL 应是重定向目标；实际：\(response.finalURL?.absoluteString ?? "nil")"
+        )
+        XCTAssertEqual(
+            session.cookies["bzb_jsxsd"], "authed-session",
+            "重定向那一跳的 Set-Cookie 必须并进会话罐子；实际：\(session.cookies)"
+        )
+        XCTAssertTrue(
+            recorder.cookies(for: landing).contains { ($0 ?? "").contains("bzb_jsxsd=authed-session") },
+            "重定向那一跳下发的会话 Cookie 必须被带到下一跳（否则 jsxsd 会话永远建立不起来）；"
+                + "实际请求：\(recorder.entries)"
+        )
+    }
 }
 
 /// 记录桩 `URLProtocol` 收到的每一次请求（URL + Referer），供回归断言使用。
@@ -212,5 +304,79 @@ private final class JwxtRequestRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return entries.filter { $0.url == url }.compactMap { $0.referer }
+    }
+}
+
+/// 能返回**自定义响应头**（`Location` / `Set-Cookie`）的桩。
+///
+/// 现有的 `JwxtStubURLProtocol` 只会回一个固定 `Content-Type`，做不出「302 + Set-Cookie」
+/// 这种形态 —— 而整条「重定向那一跳的会话 Cookie 会不会丢」的链路恰恰要靠它来验证。
+final class JwxtRedirectStubURLProtocol: URLProtocol {
+
+    /// `(statusCode, headers, body)`；未设置时按 404 处理。
+    private static var responder: ((URLRequest) -> (Int, [String: String], Data))?
+    private static let lock = NSLock()
+
+    static func setResponder(_ value: ((URLRequest) -> (Int, [String: String], Data))?) {
+        lock.lock()
+        defer { lock.unlock() }
+        responder = value
+    }
+
+    private static func currentResponder() -> ((URLRequest) -> (Int, [String: String], Data))? {
+        lock.lock()
+        defer { lock.unlock() }
+        return responder
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let responder = JwxtRedirectStubURLProtocol.currentResponder(),
+              let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        let (status, headers, data) = responder(request)
+        guard let response = HTTPURLResponse(
+            url: url,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: headers
+        ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// 记录每一次请求的 URL 与**实际发出去的 `Cookie` 头**（后者是「逐跳带 Cookie」的直接证据）。
+private final class JwxtCookieRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [(url: String, cookie: String?)] = []
+
+    func record(url: String, cookie: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.append((url, cookie))
+    }
+
+    func cookies(for url: String) -> [String?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.filter { $0.url == url }.map { $0.cookie }
+    }
+
+    var entries: [(url: String, cookie: String?)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries
     }
 }
