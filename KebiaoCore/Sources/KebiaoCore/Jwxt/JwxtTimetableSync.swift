@@ -81,7 +81,13 @@ public struct JwxtTimetableSync: @unchecked Sendable {
         )
         guard loginResult.isLoggedIn else {
             log?("登录教务系统失败，请检查账号密码")
-            throw JwxtSyncError.loginFailed(detail: loginResult.diagnostic)
+            // 把**逐跳轨迹**一并带出去：真机上只看到一句「被跳回登录页」是定位不了根因的
+            // （2026-10-18/19 连续两轮就卡在这里）。轨迹里只有状态码 / 长度 / 标题 /
+            // 服务端原文片段 / **Cookie 名**，不含任何 Cookie 值与 `encoded`
+            // （红线见 `JwxtLoginClient.lastLoginTrace` 的注释）。
+            let trace = loginClient.lastLoginTraceText
+            let detail = trace.isEmpty ? loginResult.diagnostic : "\(loginResult.diagnostic)｜\(trace)"
+            throw JwxtSyncError.loginFailed(detail: detail)
         }
 
         let parser = QiangzhiJwxtParser(session: session, log: log)

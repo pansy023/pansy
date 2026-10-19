@@ -202,6 +202,25 @@ public final class JwxtSession: @unchecked Sendable {
                 pendingForm = []
             }
             request.httpBody = body
+
+            // recon §1.2 明确要求**所有请求**都带这个桌面 UA，原版靠的是 jsoup 的默认 UA
+            // —— jsoup 自 1.10.2 起「Connect now uses a desktop user agent by default」
+            // （release notes 原文），所以 Android 那几跳实际发的也是桌面浏览器 UA。
+            //
+            // 不能让 URLSession 用它自己的默认 UA：那是
+            // `<App 名字>/<版本> CFNetwork/<版本> Darwin/<版本>`，服务端会把请求认成
+            // 非浏览器客户端。真机实测（2026-10-19）：**同一账号、同一密码**，
+            // 手机 Safari 能正常登录进入系统内部页面，App 却报
+            // 「登录教务系统失败…（诊断：被跳回登录页（验活页 title=登录））」，
+            // 而逐跳比对下来，与 Android 唯一的**系统性**差异就是这几跳的 UA
+            // （Referer / Content-Type / Cookie 携带方式都已逐条对齐）。
+            //
+            // 调用方显式传了 User-Agent 的（收尾跳、网关跳、抓课表跳）保持原样 —— 那几处
+            // 本来就逐字对齐原版，值也是同一个常量。
+            if extraHeaders["User-Agent"] == nil {
+                request.setValue(JwxtSession.userAgent, forHTTPHeaderField: "User-Agent")
+            }
+
             if options.carriesCookies, let cookieHeader = jar.cookieHeader(), !cookieHeader.isEmpty {
                 request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             }

@@ -115,6 +115,42 @@ public final class JwxtLoginClient: @unchecked Sendable {
     /// 不足以证明登录阶段读得到「已导入」标志；此处不发明协议，只留闭包。
     public var hasImportedBefore: @Sendable () -> Bool
 
+    /// 本次登录的**逐跳轨迹**：每一跳记下 方法 + URL + HTTP 状态 + 响应长度 + 页面标题
+    /// + 响应原文片段 + 这一跳**实际带上了哪些 Cookie 名**。
+    ///
+    /// 为什么要有它：真机上的失败只能看到一句诊断（例如「被跳回登录页」），
+    /// 但那一句话既不能说明**是哪一跳**出的问题，也不能说明**服务端到底回了什么** ——
+    /// 2026-10-18/19 连续两轮排查都卡在这里。有了轨迹，用户截图一次就能定位。
+    ///
+    /// ⚠️ 三条红线，写在这里以免后来者顺手破坏：
+    /// 1. **只记 Cookie 名，绝不记值** —— 值就是会话凭证，截图泄露等于会话被顶；
+    /// 2. 响应片段来自服务端正文，**不含密码**，且按 `responseSnippet` 截断；
+    /// 3. `encoded`（加密后的口令串）**一律不记** —— 它可由用户名 + 密码逆推，
+    ///    等同明文密码泄露（原版 `login$2.java:190` 就是直接打印它的，本实现刻意不复制）。
+    public private(set) var lastLoginTrace: [String] = []
+
+    /// 轨迹的单行形式（拼进失败诊断，供真机截图回传）。
+    public var lastLoginTraceText: String {
+        guard !lastLoginTrace.isEmpty else { return "" }
+        return "【登录轨迹】" + lastLoginTrace.joined(separator: "；")
+    }
+
+    /// 追加一条轨迹。
+    private func record(_ line: String) {
+        lastLoginTrace.append(line)
+    }
+
+    /// 把 Cookie 字典压成「名字列表」（**不输出值**）。
+    private static func cookieNames(_ cookies: [String: String]) -> String {
+        cookies.isEmpty ? "无" : cookies.keys.sorted().joined(separator: ",")
+    }
+
+    /// 页面的 `<title>`，空则给「(无)」，避免轨迹里出现空白段。
+    private static func traceTitle(_ body: String) -> String {
+        let title = JwxtHTML.title(body)
+        return title.isEmpty ? "(无)" : title
+    }
+
     public init(
         session: JwxtSession,
         hasImportedBefore: @escaping @Sendable () -> Bool = { false }
@@ -245,6 +281,7 @@ public final class JwxtLoginClient: @unchecked Sendable {
 
         // `login$2.java:136`：每次登录前清空 timetableReferer。
         session.setTimetableReferer(nil)
+        lastLoginTrace = []
 
         // ── 步骤 1：访问首页播种 JSESSIONID（`:139-145`）────────────────────
         let seedURL = base + "/"
@@ -255,6 +292,10 @@ public final class JwxtLoginClient: @unchecked Sendable {
                 options: JwxtSession.RequestOptions(method: "GET", headers: [:])
             )
             seedCookies = seed.cookies
+            record(
+                "① GET \(seedURL) → status=\(seed.statusCode) len=\(seed.body.count)"
+                    + " cookie=\(JwxtLoginClient.cookieNames(seed.cookies))"
+            )
         } catch {
             return .transportFailure(message: String(describing: error))
         }
@@ -271,6 +312,18 @@ public final class JwxtLoginClient: @unchecked Sendable {
             )
             keyBody = keyResponse.body
             for (name, value) in keyResponse.cookies { accumulated[name] = value }
+            // ⚠️ `hasHash` 必须先算成局部常量再插值：把 `contains("#")` 直接写进插值里，
+            // 会让本仓库的 `tools/swift_sanity_check.py` 在剥字符串时误判 —— 它把
+            // 「`"` 之后 12 个字符内出现 `#`」当成 Swift raw string 的起始，
+            // 于是把文件剩下的部分全部吞成字符串，报出一堆假的「从未闭合」
+            // （2026-10-19 实测：正是这一处触发的）。
+            let keyHasHash = keyResponse.body.contains("#")
+            record(
+                "② POST \(sessionKeyURL) → status=\(keyResponse.statusCode)"
+                    + " len=\(keyResponse.body.count) hasHash=\(keyHasHash)"
+                    + " title=\(JwxtLoginClient.traceTitle(keyResponse.body))"
+                    + " cookie=\(JwxtLoginClient.cookieNames(accumulated))"
+            )
         } catch {
             return .transportFailure(message: String(describing: error))
         }
@@ -323,6 +376,12 @@ public final class JwxtLoginClient: @unchecked Sendable {
             return text.isEmpty ? loginResponse.body : text
         }()
         let finalURL = loginResponse.finalURL?.absoluteString ?? logonURL
+        record(
+            "③ POST \(logonURL) → status=\(loginResponse.statusCode) final=\(finalURL)"
+                + " len=\(loginResponse.body.count) title=\(JwxtLoginClient.traceTitle(loginResponse.body))"
+                + " cookie=\(JwxtLoginClient.cookieNames(accumulated))"
+                + " snippet=\(JwxtLoginClient.responseSnippet(loginResponse.body))"
+        )
 
         // `:227`：欢迎 / 主页 → 成功。
         if body.contains(JwxtLoginClient.Marker.welcome) || body.contains(JwxtLoginClient.Marker.home) {
@@ -400,6 +459,11 @@ public final class JwxtLoginClient: @unchecked Sendable {
             )
             mainBody = main.body
             for (name, value) in main.cookies { cookies[name] = value }
+            record(
+                "④ GET \(mainURL) → status=\(main.statusCode) len=\(main.body.count)"
+                    + " title=\(JwxtLoginClient.traceTitle(main.body))"
+                    + " cookie=\(JwxtLoginClient.cookieNames(cookies))"
+            )
         } catch {
             return .transportFailure(message: String(describing: error))
         }
@@ -451,6 +515,11 @@ public final class JwxtLoginClient: @unchecked Sendable {
             )
             session.mergeCookies(working)
             for (name, value) in main.cookies { session.mergeCookies([name: value]) }
+            record(
+                "④ GET \(mainURL)（兜底验活） → status=\(main.statusCode) len=\(main.body.count)"
+                    + " title=\(JwxtLoginClient.traceTitle(main.body))"
+                    + " snippet=\(JwxtLoginClient.responseSnippet(main.body))"
+            )
             return JwxtHTML.title(main.body)
         } catch {
             session.mergeCookies(working)
@@ -516,6 +585,12 @@ public final class JwxtLoginClient: @unchecked Sendable {
             // `:122-123`：`timetableReferer = str3`，即 `.jsp` 那个地址本身
             // （**不是**跟随重定向后的 finalURL —— 原版写死的就是 str3）。
             session.setTimetableReferer(homeURL.absoluteString)
+            record(
+                "④' GET \(homeURL.absoluteString)（选课入口「进入首页」跳）"
+                    + " → status=\(response.statusCode) len=\(response.body.count)"
+                    + " title=\(JwxtLoginClient.traceTitle(response.body))"
+                    + " cookie=\(JwxtLoginClient.cookieNames(cookies))"
+            )
             return homeURL.absoluteString
         } catch {
             return nil

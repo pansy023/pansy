@@ -144,6 +144,51 @@ final class JwxtLoginDiagnosticsTests: XCTestCase {
         XCTAssertFalse(result.isLoggedIn, "收尾跳仍是登录页时不得判成功，实际：\(result.diagnostic)")
         XCTAssertEqual(result, JwxtLoginClient.JwxtLoginResult.titleRejected(title: "登录"))
     }
+
+    // MARK: - 逐跳轨迹（真机排查用）
+
+    /// 登录失败后必须留下**逐跳轨迹**，且轨迹里绝不能出现明文密码 / `encoded` / Cookie 值。
+    ///
+    /// 为什么需要：真机上只能看到一句「被跳回登录页（验活页 title=登录）」，它既说不出
+    /// **是哪一跳**出的问题、也说不出**服务端到底回了什么**，2026-10-18/19 连续两轮排查
+    /// 都卡在这里。这条用例锁住两件事：轨迹必须覆盖全部四跳；轨迹必须不泄露任何凭证。
+    func testLastLoginTraceRecordsAllHopsWithoutLeakingSecrets() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [JwxtStubURLProtocol.self]
+
+        JwxtStubURLProtocol.setResponder { request in
+            let url = request.url?.absoluteString ?? ""
+            if url.contains("flag=sess") {
+                // 真服务器实测返回的形状：`scode#sxh`。
+                return (200, Data("abc#12345678901234567890".utf8))
+            }
+            // 登录 POST 与之后的每一跳都回登录页 ⇒ 最终判定必须是 titleRejected。
+            return (200, Data(
+                "<html><head><title>登录</title></head><body>请先登录系统</body></html>".utf8
+            ))
+        }
+        defer { JwxtStubURLProtocol.setResponder(nil) }
+
+        let client = JwxtLoginClient(
+            baseURL: UserCredentials.defaultJwxtUrl,
+            configuration: configuration
+        )
+        let result = await client.login(username: "20230001", password: "Secret!123")
+
+        XCTAssertFalse(result.isLoggedIn, "这条桩数据必须判成登录失败，实际：\(result.diagnostic)")
+        XCTAssertEqual(result, JwxtLoginClient.JwxtLoginResult.titleRejected(title: "登录"))
+
+        let trace = client.lastLoginTraceText
+        XCTAssertFalse(trace.isEmpty, "登录失败时必须留下逐跳轨迹，否则真机上仍然无 clue")
+        for hop in ["① GET", "② POST", "③ POST", "④ GET"] {
+            XCTAssertTrue(trace.contains(hop), "轨迹缺少「\(hop)」这一跳，实际：\(trace)")
+        }
+        XCTAssertTrue(trace.contains("title=登录"), "轨迹必须带出服务端返回的页面标题，实际：\(trace)")
+
+        // 红线：轨迹是给用户截图回传的，绝不能带出任何可被利用的凭证。
+        XCTAssertFalse(trace.contains("Secret!123"), "轨迹绝不能包含明文密码，实际：\(trace)")
+        XCTAssertFalse(trace.lowercased().contains("encoded"), "轨迹绝不能出现 encoded，实际：\(trace)")
+    }
 }
 
 /// 记录桩 `URLProtocol` 收到的每一次请求（URL + Referer），供回归断言使用。
