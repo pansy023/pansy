@@ -268,6 +268,70 @@
 > 「0.35s 内双击被窗口吃掉」这一支（XCUITest 造不出，只能代码审查 + 真机手感确认）。
 > 而「转场途中点返回立即原路退回」**本轮已由 CI 真跑验证**（用例②），不再只是设计意图。
 >
+> **诚实提示（第十一次更新，2026-10-19 · 覆盖上面第十次；本轮修的是「教务登录」，不是转场）**：
+>
+> **① 你反馈的现象**：真机「刷新课表」报
+> `刷新失败: 登录教务系统失败，请检查账号密码（诊断: 被跳回登录页（验活页 title=登录））`。
+> 你随后确认的三件事把问题锁死了：手机 Safari 用**同一 URL / 同一学号 / 同一密码能登录成功**；
+> 手机上装的是**最近一次 CI 的 IPA**（已包含此前三轮登录修复）；密码框是**有圆点**的
+> （圆点消失发生在弹窗出现之后，见 ⑦）。⇒ 凭证与网络都没问题，这是 App **请求协议层**的缺陷。
+>
+> **② 排查取证**：本机（Windows）**无法复现** —— 学校 WAF 按 IP 拦截，本机对 `/`、`/jsxsd/`、
+> `/Logon.do?method=logon&flag=sess`、`/jsxsd/xskb/xskb_list.do` 全部返回 `403 Forbidden`
+> （页面原文「请求的页面包含一些不合理的内容，已被网站管理员设置拦截」）。
+> 因此改为逐条比对 Android（jsoup）与 iOS 的四跳 —— 方法 / URL / Referer / Content-Type /
+> 表单字段 / Cookie 携带方式**全部逐条对齐**，唯一系统性差异是 **User-Agent**。
+>
+> **③ 根因与修复（commit `d43d82c9`，已推送并逐文件回读校验字节一致）**：
+> - 原版那几跳靠的是 **jsoup 的默认 UA**；jsoup 自 1.10.2 起
+>   「Connect now uses a desktop user agent by default」（release notes 原文），即桌面浏览器 UA。
+>   而本 App 只有「收尾跳 / 网关跳 / 抓课表跳」显式设了 UA，**登录前三跳与兜底验活跳**
+>   发出去的是 URLSession 默认的 `CFNetwork/… Darwin/…`。`JwxtSession` 的注释里**早就写着**
+>   「本实现采用全量设置」—— 注释与实现不一致；本轮把注释兑现（recon doc §1.2
+>   也明确要求全部请求都带这个 UA）。
+> - 同时新增**逐跳轨迹** `JwxtLoginClient.lastLoginTrace`：每跳记录 方法 / URL / HTTP 状态 /
+>   响应长度 / 页面标题 / 服务端原文片段 / 这一跳**实际带上了哪些 Cookie 名**
+>   （红线三条：只记 Cookie 名不记值、不记 `encoded`、不记明文密码），由 `JwxtTimetableSync`
+>   拼进登录失败诊断。这样万一 UA 不是根因，真机截图一次就能指出**是哪一跳、服务端到底回了什么**。
+>   新增单测 `testLastLoginTraceRecordsAllHopsWithoutLeakingSecrets` 锁住「四跳都在轨里」+「不泄露凭证」。
+>
+> **④ 本轮 CI 先红后绿（同一 commit、零代码改动、两个 attempt）**：
+> - attempt 1（run `39191051721`）：`KebiaoCore 单元测试` **success**（`[275/275]`，
+>   含本轮新增的 `[36/275] testLastLoginTraceRecordsAllHopsWithoutLeakingSecrets`）；
+>   `生成工程并编译 iOS App` **success**；但 UI 闸门 **failure**，唯一失败用例
+>   `SettingsControlsUITests.testEveryDisplayToggleActuallyFlips`（设置页第 9 个开关
+>   `settings.toggle.courseLocation` 点击后 `value` 停在 1）。
+> - **判定为偶发而不是缺陷，证据四条**：① 本轮未改动设置页任何一行代码；
+>   ② 同一条用例在上一轮全绿 run `39138682857` 里**通过**；
+>   ③ 同一次运行里同组另外 8 个开关（每个点两下、共 16 次点击）全部正常翻转；
+>   ④ 失败日志显示点击**已合成并送达该开关**（`Synthesize event` → `Wait for app to idle`）、
+>   app 进入 idle、**全程没有发生滚动**（该用例 1221–1461 行内无任何 `Swipe`）、无遮挡元素，
+>   tearDown 截图也无键盘 / 无弹窗 / 无遮罩；且本轮 XCUITest 总耗时 **978.992 s**，
+>   比上一轮全绿的 **800.874 s** 慢 **22%** —— runner 更慢/更拥挤，与「事件偶发丢失」的时序特征吻合。
+> - attempt 2（同一 run、**只重跑失败的 job、零代码改动**）：**三个 job 全部 success**，
+>   闸门 step 13 = success，`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`（865.656 s），
+>   SettingsControls 6/6 通过（301.654 s）。⇒ 同代码重跑即转绿，确证 attempt 1 是偶发丢事件。
+> - ⚠️ **没有**为了让闸门变绿而修改任何断言、跳过任何用例或放松任何阈值。
+>
+> **⑤ 产物级自测（本轮 artifact 解包核验）**：`Kebiao-unsigned.ipa` **1,281,160 B**，
+> SHA256 `44D104DD0F793154EB3778C1BE3415A86B4BB3588E9BDDA2E862FECF65BDF99D`，
+> 已覆盖固定交付路径 `c:\Users\Pansy\TREA\IOS KEBIAO\Kebiao-unsigned.ipa`。
+> 主二进制 `Payload/Kebiao.app/Kebiao`（**2,355,448 B**）按 **UTF-8 字节序列**搜到
+> `【登录轨迹】`@`0xBC280`（**本轮新增的判别位**，上一版构建不可能有它）、
+> `被跳回登录页`@`0xBC2C0`、`KebiaoTransitionSlowdown`@`0xBAB60`。
+> 阴性对照 `hasHash=` **ABSENT** —— 这条**不是**判别失效，而是 Swift 把 ≤15 字节的短字面量
+> 内联进代码段、不进数据段（与 `tt.nav.settings` 同类），字节搜索天然搜不到；
+> 本轮真正的判别位是 `【登录轨迹】`（18 字节，进数据段）。
+>
+> **⑥ 仍然没有验证的**：**UA 修复是否真的解决登录，只能在真机上验证** —— 本机是 Windows，
+> 无 Xcode / 模拟器 / Swift 工具链，且被学校 WAF 按 IP 拦截，无法复现登录流程；
+> CI 的 275 条单测 + 20 条 XCUITest **证明不了**这条修复对真机教务登录有效。
+> 第二项待验证：即便 UA 不是根因，本轮新增的**逐跳轨迹**会在下次真机失败时给出确切证据。
+>
+> **⑦ 另有一处独立缺陷，本轮**没有**动**：你观察到的「点刷新课表、弹窗出现后密码框圆点消失」
+> —— SwiftUI `SecureField` 在弹窗触发重渲染后丢掉显示内容；它会让之后点「保存设置」
+> 把 Keychain 里的密码覆盖成空串。为避免与登录修复混在一起，留到下一轮单独修。
+>
 > **诚实提示（第六次更新，2026-10-17 23:58 · 已被上面第七次覆盖）**：run `39046318485`（commit `5578acd`）
 > **三个 job 全部 success**（`KebiaoCore 单元测试` 6/6 步、`生成工程并编译 iOS App` 10/10 步、
 > `App 单元测试 + iPhone 模拟器 XCUITest` 15/15 步，含末尾闸门步骤
@@ -902,17 +966,17 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 
 ## 7. 状态口径（九种状态，**不能互相替代**）
 
-以下「当前」= CI run `39138682857` / commit `a14aff6e` 的真实结果（**轮 10**，2026-10-18/19）。
+以下「当前」= CI run `39191051721` / commit `d43d82c9` 的真实结果（**轮 11**，以第 2 次 attempt 为准；第 1 次唯一那条红是偶发，见 §0「第十一次更新」④）。
 
 | 状态 | 当前 |
 | --- | --- |
 | 已完成静态代码检查 | ✅ 是（代码路径逐条读过） |
-| 已完成单元测试（`KebiaoCore`，`swift test`） | ✅ **是**：**274 条**全部执行完（日志跑到 `[274/274]`），整份日志无 failure/error，job = success |
+| 已完成单元测试（`KebiaoCore`，`swift test`） | ✅ **是**：**275 条**全部执行完（日志跑到 `[275/275]`），整份日志无 failure/error，job = success |
 | 已完成单元测试（App 层，`KebiaoTests`） | ✅ **是**：3 条，0 失败（`Executed 3 tests, with 0 failures`） |
 | 已成功编译 iOS 应用 | ✅ **是**：job「生成工程并编译 iOS App」success |
-| 已在模拟器启动应用 | ✅ **是**：iPhone 模拟器上真实跑完 20 条 XCUITest（`** TEST SUCCEEDED **`，800.874 s） |
-| 已通过 UI 自动化测试 | ✅ **是**：**20/20 全部通过**（`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`，800.874 s）；闸门步骤 = success，无残留失败用例 |
-| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1,276,549 B，SHA256 `C3A7DC37…3210`） |
+| 已在模拟器启动应用 | ✅ **是**：iPhone 模拟器上真实跑完 20 条 XCUITest（`** TEST SUCCEEDED **`，865.656 s） |
+| 已通过 UI 自动化测试 | ✅ **是**：**20/20 全部通过**（`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`，865.656 s）；闸门步骤 = success，无残留失败用例 |
+| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1,281,160 B，SHA256 `44D104DD…F99D`） |
 | 已签名 | ❓ 由你完成，助手侧无证据 |
 | 已在真机安装 | ❓ 由你完成，助手侧无证据 |
 | 已在真机运行 | ❓ 由你完成，助手侧无证据 |
