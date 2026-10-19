@@ -200,6 +200,74 @@
 > 本机是 Windows，没有 Xcode / 模拟器 / Swift 工具链 —— 只能给 CI 的模拟器证据 + 截图。
 > 若真机上觉得时长 / 曲线 / 不透明度不合适，改的是 `RootView` 顶部那几个时间常量，说一声即可。
 >
+> **诚实提示（第十次更新，2026-10-19 · 覆盖上面第九次；本轮修掉「转场途中点返回」的真 bug）**：
+> 第九次更新跑出一轮全绿（run `39118495101`），但随后**连续两轮暴露出同一个场景**的问题，
+> 直到本轮才真正修掉。失败的两轮都保留在下面，不粉饰：
+>
+> **① 两轮红（同一条用例、同一个断言，两次根因不同）**：
+> - run `39132644334`（commit `ae41aa0e`）：用例②的 `waitForDisappearance` 60s 超时。
+>   截图 `C2E20949-63A6-4AFD-B43F-4A8BA67C2A62.png` 显示圆盘**已经收拢回左上角**、
+>   内容已经消失 —— 收起动画视觉上跑完了，浮层却没被摘掉（收起的 `completion` 没回调）。
+>   据此加了 `scheduleTeardownSafetyNet()`：等「收拢时长 × 减速倍数 + 0.3s」后，
+>   若 `progress` 已回到 0 而浮层还在，就强制置 `nil`（commit `49ae6ca0`）。
+> - run `39135217620`（commit `49ae6ca0`）：**同一条用例还是红，但形态完全不同**。
+>   日志时间线（原文）：t=7.98s 点齿轮 → t=14.27s 点「返回」（此刻展开动画只跑到第 6 秒 / 共 22 秒）
+>   → 之后 60 秒里 `settings.nav.account` **从未消失**；tearDown 截图里设置页**完整开着**。
+>   结论：`closeSettings` 根本没被调用 —— 不是「浮层摘不掉」，是**压根没开始收**。
+>
+> **② 根因（有原始日志，不是猜）**：`SettingsRevealOverlay` 内容层上的
+> `allowsHitTesting(reveal.interactive)` 门在动画跑完前把整层命中关掉 —— 返回键也被一并挡死。
+> 也就是说「动画进行中点击返回应沿当前进度原路退回」这条需求，**在真机上同样走不通**：
+> 这是真 bug，不只是测试问题。第九次那段代码注释曾把同类现象解释为
+> 「命中测试对工具栏按钮无效、已由 `closeSettings` 的状态判断挡下」——本轮日志证明该解释不成立
+> （本轮那次点击距 `openedAt` 已 6.44s，远在 0.35s 窗口之外，窗口没挡它）。
+>
+> **③ 修复（commit `a14aff6e`，已推送并逐文件回读校验字节一致）**：
+> - 删除 `SettingsReveal.interactive` 状态位与内容层的 `allowsHitTesting` 门；
+> - 圆外的点击闸门**保留**：收拢途中主界面逐渐露出、展开途中右上角「＋」都不会被误点；
+> - 返回键从**第一帧**起就可点 —— 防连点只由 `closeSettings` 里 0.35s 的
+>   `reverseGuardSeconds` 状态窗口负责（窗口内 = 双击第二击，忽略；窗口外 = 中途反悔，
+>   立即按原路收拢）；
+> - 用例②同步改写为它能**确定性**验证的场景并如实改名
+>   `testMidTransitionBackTapReturnsToMainScreenAndKeepsState`（等设置页开始打开 → 转场途中点返回
+>   → 断言收拢消失 + 主界面周次保持且「下一周」可点）。**没有放松任何断言**；
+>   旧写法依赖的「第二击被命中门吃掉」这一行为已按需求拆除。
+> - 「0.35s 内真实双击」依旧**无法**由 XCUITest 造出（实测两次 `tap()` 最小间隔 1.8～2.1s），
+>   这条限制在用例注释里继续如实标注，不假装覆盖。
+>
+> **④ CI 状态（run `39138682857` / commit `a14aff6e`）**：**三个 job 全部 success**，
+> 31 项 step **0 个非 success**，含末尾闸门「测试未全部通过即让工作流失败」= success。
+> 数字全部取自日志原文：
+> - `KebiaoCore 单元测试`：`[274/274]` —— 274 条全部执行，整份日志无 failure/error；
+> - App 层单元测试：`Test Suite 'AppEnvironmentTests' passed`，3 条 0 失败；
+> - XCUITest：**`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`**（800.874 s）。
+>   8 个 suite 全 passed：CourseCRUD 2 / DarkMode 3 / Launch 2 / Persistence 1 /
+>   SettingsControls 6 / WeekNavigation 3 / **SettingsTransition 3**。本轮转场三条原文：
+>   `testTransitionStartsAtGearButtonAndExpandsOutward` passed 40.310 s、
+>   `testMidTransitionBackTapReturnsToMainScreenAndKeepsState` passed **49.930 s**
+>   （← 前两轮红的就是它，本轮转绿）、`testReduceMotionStillOpensAndClosesSettings` passed 21.145 s。
+>
+> **⑤ 产物级自测（从本轮 artifact 解包核验）**：`Kebiao-unsigned.ipa` **1,276,549 B**，
+> SHA256 `C3A7DC3715C4C941C37C8868A6D343D3089A604595ED3C249EB5F65CD53F3210`，
+> 已覆盖固定交付路径 `c:\Users\Pansy\TREA\IOS KEBIAO\Kebiao-unsigned.ipa`。
+> 主二进制 `Payload/Kebiao.app/Kebiao`（**2,353,120 B**）里按 **UTF-8 字节序列**搜到
+> `KebiaoTransitionSlowdown`@`0xB9230`、`KebiaoForceReduceMotion`@`0xB9250`、
+> `settings.nav.back`@`0xB9A30`、`被跳回登录页`@`0xBA970`；
+> 阴性对照（本轮不可能存在的哨兵串）确认 **ABSENT** —— 证明这次搜索有区分力。
+> （更正一处旧口径错误：第九次那轮用 ASCII 解码搜索，中文串**必然搜不到**；
+> 本轮改按 UTF-8 字节搜，中文串正确命中。）
+> `Info.plist` 仍是**域名级** ATS 例外（`jwgl.xihang.com.cn` +
+> `NSExceptionAllowsInsecureHTTPLoads` + `NSIncludesSubdomains`），**没有** `NSAllowsArbitraryLoads`。
+>
+> **⑥ 转场截图复核（本轮 artifact 人工核对）**：第一帧（`transition-frame-1`）的浅色圆盘
+> **锚在屏幕左上角、边界是圆弧**，圆**外**露出的正是课表主页本体（「＋」、周几表头、节次行都在，
+> 无黑边 / 空洞）——「从按钮向外铺开」成立；结束帧（`transition-settled-settings`）
+> 与参考图一致（圆形返回键 +「设置」标题 + 两张卡 + 说明 +「显示选项」开关组），无遮罩残留。
+>
+> **⑦ 仍然没有验证的**：转场在**真机**上的观感与真机「减弱动态效果」的效果；
+> 「0.35s 内双击被窗口吃掉」这一支（XCUITest 造不出，只能代码审查 + 真机手感确认）。
+> 而「转场途中点返回立即原路退回」**本轮已由 CI 真跑验证**（用例②），不再只是设计意图。
+>
 > **诚实提示（第六次更新，2026-10-17 23:58 · 已被上面第七次覆盖）**：run `39046318485`（commit `5578acd`）
 > **三个 job 全部 success**（`KebiaoCore 单元测试` 6/6 步、`生成工程并编译 iOS App` 10/10 步、
 > `App 单元测试 + iPhone 模拟器 XCUITest` 15/15 步，含末尾闸门步骤
@@ -609,14 +677,21 @@ t = 29.27s Waiting 30.0s for Any (First Match) to exist  ← 新卡片始终没�
 
 > **这一条我还没有改任何代码、也没有再推送**：修法需要你点头（§6 第 8 条）。
 
-### 4.1 XCUITest 用例清单（20 条；**已执行：20 通过 / 0 失败** —— 含轮 9 新增的转场 3 条）
+### 4.1 XCUITest 用例清单（20 条；**已执行：20 通过 / 0 失败** —— 含轮 9 新增、轮 10 修正的转场 3 条）
 
-> 轮 9（commit `a6017d04` / run `39118495101`）新增 `SettingsTransitionUITests` 3 条并全部通过：
-> `testTransitionStartsAtGearButtonAndExpandsOutward`（42.744 s，只保留三条核心断言：
+> 轮 9（commit `a6017d04` / run `39118495101`）新增 `SettingsTransitionUITests` 3 条并全部通过。
+> **轮 10（commit `a14aff6e` / run `39138682857`）修正了其中一条**：旧用例②
+> `testRapidDoubleTapOpensOneSettingsPageAndKeepsMainScreenState` 依赖的
+> 「转场途中第二击被内容层命中门吃掉」这一行为，与需求「动画进行中点击返回应沿当前进度
+> 原路退回」直接冲突（run `39135217620` 的日志与截图：减速下展开第 6 秒点返回没有任何反应，
+> 设置页完整开了 60 秒）。命中门拆除后，该场景改写为它能确定性验证的形态并如实改名 →
+> `testMidTransitionBackTapReturnsToMainScreenAndKeepsState`（**收起消失 + 主界面状态保持**
+> 两层断言，一条没减）。轮 10 本轮三条原文：
+> `testTransitionStartsAtGearButtonAndExpandsOutward`（40.310 s，三条核心断言不变：
 > 第一帧变化贴住齿轮按钮 / 后一帧扩到更远处 / 结束态是完整设置页）、
-> `testRapidDoubleTapOpensOneSettingsPageAndKeepsMainScreenState`（58.759 s）、
-> `testReduceMotionStillOpensAndClosesSettings`（25.030 s）。细几何（圆环离散度、四角覆盖、
-> 无黑边）改用 CI 导出截图人工核对，理由见 §0「第九次更新」③。
+> `testMidTransitionBackTapReturnsToMainScreenAndKeepsState`（49.930 s）、
+> `testReduceMotionStillOpensAndClosesSettings`（21.145 s）。细几何（圆环离散度、四角覆盖、
+> 无黑边）仍用 CI 导出截图人工核对，理由见 §0「第九次更新」③，复核结果见「第十次更新」⑥。
 
 > 本节下面那段「16 通过 / 1 失败」是**轮 3 快照**（run `39027985486`）。轮 4（`39035942905`）、
 > 轮 5（`39043320005`）、轮 6（`39046318485`）的真实结果**都是 17/17 全绿**，
@@ -827,7 +902,7 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 
 ## 7. 状态口径（九种状态，**不能互相替代**）
 
-以下「当前」= CI run `39118495101` / commit `a6017d04` 的真实结果（**轮 9**，2026-10-18）。
+以下「当前」= CI run `39138682857` / commit `a14aff6e` 的真实结果（**轮 10**，2026-10-18/19）。
 
 | 状态 | 当前 |
 | --- | --- |
@@ -835,9 +910,9 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 | 已完成单元测试（`KebiaoCore`，`swift test`） | ✅ **是**：**274 条**全部执行完（日志跑到 `[274/274]`），整份日志无 failure/error，job = success |
 | 已完成单元测试（App 层，`KebiaoTests`） | ✅ **是**：3 条，0 失败（`Executed 3 tests, with 0 failures`） |
 | 已成功编译 iOS 应用 | ✅ **是**：job「生成工程并编译 iOS App」success |
-| 已在模拟器启动应用 | ✅ **是**：iPhone 模拟器上真实跑完 20 条 XCUITest（900 s） |
-| 已通过 UI 自动化测试 | ✅ **是**：**20/20 全部通过**（`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`）；闸门步骤 = success，无残留失败用例 |
-| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1,273,747 B，SHA256 `62BF0672…0AD0`） |
+| 已在模拟器启动应用 | ✅ **是**：iPhone 模拟器上真实跑完 20 条 XCUITest（`** TEST SUCCEEDED **`，800.874 s） |
+| 已通过 UI 自动化测试 | ✅ **是**：**20/20 全部通过**（`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`，800.874 s）；闸门步骤 = success，无残留失败用例 |
+| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1,276,549 B，SHA256 `C3A7DC37…3210`） |
 | 已签名 | ❓ 由你完成，助手侧无证据 |
 | 已在真机安装 | ❓ 由你完成，助手侧无证据 |
 | 已在真机运行 | ❓ 由你完成，助手侧无证据 |
@@ -847,6 +922,9 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 > 只要还有用例没通过，就不允许把它当成交付物。当时那条失败落在**改名**那一步
 > （不是更早的删除确认按钮 —— 那 4 条已转绿），根因是**测试清空输入框的方式不确定**
 > （§4.0，两张截图已定案），**不是 App 缺陷**；修法是断言一字不改地改成确定性清空（§6 第 8 条）。
-> **现在（轮 9）闸门步骤本身是 success，20/20 全绿 —— 所以「UI 已通过」这句此刻才成立。**
+> **现在（轮 10）闸门步骤本身是 success，20/20 全绿 —— 所以「UI 已通过」这句此刻才成立。**
 > 但口径不变：这仍是**模拟器**验证；**真机**（签名 / 安装 / 教务真实登录 / 通知弹出 / 后台唤醒
 > / 本轮转场的手感与真机「减弱动态效果」）依旧没有证据（§7 表格后三行都是 ❓）。
+> 另注（轮 10）：转场那条最关键的用例（`testMidTransitionBackTapReturnsToMainScreenAndKeepsState`）
+> 前两轮均为红（run `39132644334` / `39135217620`），本轮才转绿 —— 前两轮红的是**真缺陷**
+> （内容层命中门把返回键挡死），不是测试问题；详见 §0「诚实提示（第十次更新）」。
