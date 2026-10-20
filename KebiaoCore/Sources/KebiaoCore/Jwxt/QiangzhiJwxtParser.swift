@@ -649,8 +649,11 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
         // ④ 课程文本：本单元格切出多少段。
         diagnostics?.recordSegments(segments.count)
         for segment in segments {
+            // ④ 先记「本段里有没有目标课关键词」——必须在课名抽取**之前**记，
+            //    否则「段里有课但课名没抽出来」这种情况会被后续的空计数掩盖掉。
+            diagnostics?.recordSegmentText(segment)
             guard let name = extractCourseName(segment) else {
-                // ④ 取不到课名 ⇒ 整段被跳过（原因见 summary 的固定说明）。
+                // ④ 取不到课名 ⇒ 整段被跳过（原因由 extractCourseName 内部三分记账）。
                 diagnostics?.recordSegmentNameMissing()
                 continue
             }
@@ -737,9 +740,11 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
         ]
         let nameBlacklist: Set<String> = ["wkxx", "tzdbh", "jxlmc", "xsks", "bzstr", "ktmcstr"]
 
+        var seenNonBlankFont = false
         for font in document.select("font") {
             let text = QiangzhiJwxtParser.kotlinTrim(QiangzhiJwxtParser.nbspToSpace(font.text()))
             guard !QiangzhiJwxtParser.isBlank(text) else { continue }
+            seenNonBlankFont = true
             let title = QiangzhiJwxtParser.kotlinTrim(font.attr("title"))
             if !title.isEmpty, titleBlacklist.contains(title) { continue }
             let name = QiangzhiJwxtParser.kotlinTrim(font.attr("name"))
@@ -747,6 +752,11 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
             if text.hasPrefix("通知单编号") || text.hasPrefix("班级：") || text == "备注：" { continue }
             return text
         }
+        // ④ 走到这里说明整段没有可用的课名：把原因三分记下来（无 font / font 全空 / 全被黑名单）。
+        diagnostics?.recordNameFailure(
+            fontCount: document.select("font").count,
+            allBlank: !seenNonBlankFont
+        )
         return nil
     }
 
@@ -841,8 +851,11 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
         if let group = QiangzhiJwxtParser.firstGroup(
             #"(\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*)\((?:周|单|双)\)"#, in: text
         ), !QiangzhiJwxtParser.isBlank(group) {
-            // ④ 周次命中正则（真解析成功，不是兜底值）。
+            // ④ 周次命中正则（真解析成功，不是兜底值）+ 记下命中处**形态**。
             diagnostics?.recordWeekRangeMatched()
+            diagnostics?.recordWeekShape(
+                QiangzhiJwxtParser.weekContextShape(text: text, matched: group)
+            )
             return group
         }
         // ④ 周次未命中 ⇒ 返回兜底 `1-20`；这一条专门用来区分「真周次」与「兜底值」。
@@ -989,6 +1002,45 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
     /// 等价 Kotlin `CharSequence.isBlank()`（同上，NBSP 不算空白；空串算 blank）。
     static func isBlank(_ value: String) -> Bool {
         value.allSatisfy { $0 != "\u{00A0}" && $0.isWhitespace }
+    }
+
+    // MARK: - 诊断：周次命中处形态
+
+    /// 截取「周次命中处」前后一小段，把字符替换成类别，得到**不含任何原文**的结构签名。
+    ///
+    /// 例：`1-16(周)` 命中 `1-16`、上下文是 `周次(节次)1-16(周)[01-02节]`（已删空格）→
+    /// 前 6 个字符 `)1-16` 后 8 个字符 `(周)[01-` → 签名形如 `C D - D ( C ) [ D -`。
+    /// 数字→`D`、ASCII 字母→`L`、中日韩字符→`C`、其它标点原样保留（连续同类合并成一个）。
+    ///
+    /// 为什么要它：「周次=4 / 6 / 15」这种单值要看是源数据本来就写 `4(周)`，
+    /// 还是我们只吃到了 `1-4(周)` 的尾部 —— 只看结果数字区分不了，看形态就能区分。
+    static func weekContextShape(text: String, matched: String) -> String {
+        guard let range = text.range(of: matched) else {
+            return shapeSignature(matched)
+        }
+        let beforeStart = text.index(range.lowerBound, offsetBy: -6, limitedBy: text.startIndex) ?? text.startIndex
+        let afterEnd = text.index(range.upperBound, offsetBy: 8, limitedBy: text.endIndex) ?? text.endIndex
+        return shapeSignature(String(text[beforeStart..<afterEnd]))
+    }
+
+    /// 把字符串压成类别签名（见 `weekContextShape`）。
+    static func shapeSignature(_ value: String) -> String {
+        var out = ""
+        for character in value {
+            let symbol: String
+            if character.isNumber {
+                symbol = "D"
+            } else if character.isASCII, character.isLetter {
+                symbol = "L"
+            } else if let scalar = character.unicodeScalars.first, scalar.value >= 0x2E80 {
+                symbol = "C"
+            } else {
+                symbol = String(character)
+            }
+            if out.hasSuffix(symbol) { continue }
+            out += symbol
+        }
+        return out
     }
 
     /// 等价 Kotlin `replace("\u00A0", " ")`（`:1031`、`:1162` 的字面量就是 U+00A0）。
@@ -1150,9 +1202,20 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
     private var segmentNameMissing = 0
     private var weekRangeMatched = 0
     private var weekRangeFallback = 0
+    /// 周次**命中处的上下文形态**直方图（数字→`D`、字母→`L`、中日韩字符→`C`、其余原样、连续同类折叠）。
+    ///
+    /// 用途：真机上「周次=4 / 6 / 15」这种**单值**明显不像正常教学周区间（`1-16`），
+    /// 但只有知道命中处原文长什么样（`D-D` 还是 `D`）才能判断是源数据本来如此、
+    /// 还是我们只吃到了区间尾部。形态串里没有任何课名 / 教师姓名 / 班级信息。
+    private var weekShapes: [String: Int] = [:]
     private var periodRangePrimary = 0
     private var periodRangeFallback = 0
     private var dayHistogram: [Int: Int] = [:]
+
+    // MARK: ④ 课名抽取失败的原因（三分；原先在汇总里写死一句话，等于没测）
+    private var nameFailNoFont = 0
+    private var nameFailAllBlank = 0
+    private var nameFailBlacklisted = 0
 
     // MARK: ⑤ 过滤与保存
     private var initialCourseCount = 0
@@ -1162,7 +1225,13 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
 
     // MARK: 目标课追踪
     private var targetMentionedInRawHTML: Set<String> = []
+    /// 目标关键词出现在**单元格整格文本**里的次数（③）。
     private var targetLocatedInCell: [String: Int] = [:]
+    /// 目标关键词出现在**课程段**里的次数（④，课名抽取之前）。
+    ///
+    /// 与 `targetNameExtracted` 对比就能把「段里明明有这门课，但课名没抽出来」
+    /// 与「段里根本没有」区分开 —— 前者是解析缺陷，后者是源数据就没有。
+    private var targetInSegment: [String: Int] = [:]
     private var targetNameExtracted: [String: Int] = [:]
     private var targetInParsed: [String: Int] = [:]
     private var targetInFinal: [String: Int] = [:]
@@ -1278,11 +1347,48 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
         }
     }
 
+    /// ④ 本段里出现了哪些目标关键词（课名抽取**之前**的计数）。
+    ///
+    /// 必须与 `recordSegmentName` 分开记：只有这样才能区分「段里根本没有这门课」
+    /// 与「段里有、但课名没抽出来」—— 后者才是我们要修的解析缺陷。
+    func recordSegmentText(_ segment: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        for keyword in JwxtParseDiagnostics.targetKeywords
+        where JwxtParseDiagnostics.contains(segment, keyword) {
+            targetInSegment[keyword, default: 0] += 1
+        }
+    }
+
     /// ④ 一段取不到课名 ⇒ 整段被跳过。
     func recordSegmentNameMissing() {
         lock.lock()
         defer { lock.unlock() }
         segmentNameMissing += 1
+    }
+
+    /// ④ 课名抽取失败时，把「为什么」三分记账（原先汇总里那句原因是写死的，等于没测）。
+    ///
+    /// - Parameters:
+    ///   - fontCount: 该段 `font` 元素总数。
+    ///   - allBlank: 这些 font 的文本是否全部为空白。
+    func recordNameFailure(fontCount: Int, allBlank: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        if fontCount == 0 {
+            nameFailNoFont += 1
+        } else if allBlank {
+            nameFailAllBlank += 1
+        } else {
+            nameFailBlacklisted += 1
+        }
+    }
+
+    /// ④ 记录一次周次命中处的**形态**（不含任何课名 / 姓名 / 班级）。
+    func recordWeekShape(_ shape: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        weekShapes[shape, default: 0] += 1
     }
 
     /// ④ 周次**命中正则**（真值）。
@@ -1387,10 +1493,13 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
         // ④ 课程文本
         lines.append(
             "④ 文本 段=\(segmentTotal) 课名成功=\(segmentNameExtracted) 课名失败=\(segmentNameMissing)"
-            + "(原因：font 全被黑名单过滤或无可用 font)"
+            + "(无 font:\(nameFailNoFont) font 全空:\(nameFailAllBlank) 文本全被黑名单:\(nameFailBlacklisted))"
             + " 周次命中=\(weekRangeMatched)/兜底 \(weekRangeFallback)"
             + " 节次区间=\(periodRangePrimary)/兜底 \(periodRangeFallback)"
             + " 日分布=\(JwxtParseDiagnostics.formatIntMap(dayHistogram))"
+        )
+        lines.append(
+            "④b 周次形态(数字→D/汉字→C，连续同类已折叠)=\(JwxtParseDiagnostics.formatStringMap(weekShapes))"
         )
 
         // ⑤ 过滤与保存
@@ -1404,10 +1513,19 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
         for keyword in JwxtParseDiagnostics.targetKeywords {
             let raw = JwxtParseDiagnostics.yesNo(targetMentionedInRawHTML.contains(keyword))
             let cell = targetLocatedInCell[keyword] ?? 0
+            let segment = targetInSegment[keyword] ?? 0
             let name = targetNameExtracted[keyword] ?? 0
             let parsed = targetInParsed[keyword] ?? 0
             let final = targetInFinal[keyword] ?? 0
-            var line = "  \(keyword) 原文=\(raw) 单元格=\(cell) 课名=\(name) 解析=\(parsed) 最终=\(final)"
+            // 「段 > 课名」就是**课名抽取**吃掉的次数；「单元格 > 段」说明那门课所在的分段
+            // 根本没进 parseKbContent（例如同格多课只取了一个候选 div）。
+            var line = "  \(keyword) 原文=\(raw) 单元格=\(cell) 段=\(segment) 课名=\(name)"
+                + " 解析=\(parsed) 最终=\(final)"
+            if segment > name {
+                line += "（课名抽取丢掉 \(segment - name) 次）"
+            } else if cell > segment {
+                line += "（同格多课只取其一，丢掉 \(cell - segment) 次）"
+            }
             if parsed > final {
                 line += "（被去重/合排吃掉 \(parsed - final) 条）"
             }

@@ -536,6 +536,9 @@ final class TimetableStoreTests: XCTestCase {
         XCTAssertTrue(report.contains("已存课程=1"), report)
         XCTAssertTrue(report.contains("超出生效作息节数的课=1"), report)
         XCTAssertTrue(report.contains("超出网格行数的课=0"), report)
+        // 区间周次（1-16）不算单值；周一…周五不算周末隐藏。
+        XCTAssertTrue(report.contains("周次单值课程=0"), report)
+        XCTAssertTrue(report.contains("周末无列被隐藏=0"), report)
         XCTAssertTrue(
             report.contains("英语 课数=1 首门 日=2 节=11-12 周次=1-16 单双=无"),
             report

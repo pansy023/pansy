@@ -299,6 +299,21 @@ final class JwxtTimetableParserTests: XCTestCase {
     </table>
     """
 
+    /// 周次形态签名：能区分「区间」与「单值」，且**不含任何原文**（只保留 D/C 类别）。
+    ///
+    /// 为什么需要它：真机上周次被解析成 `4` / `6` / `15` 这种单值，只看结果分不清是
+    /// 源数据本来就写单值、还是我们只吃到了区间尾部；有了形态签名就能一眼分辨。
+    func testWeekContextShapeDistinguishesRangeFromSingleNumber() {
+        let rangeShape = QiangzhiJwxtParser.weekContextShape(text: "周次1-16(周)[01-02节]", matched: "1-16")
+        XCTAssertTrue(rangeShape.contains("D-D"), "区间应呈 D-D 形态，实际：\(rangeShape)")
+
+        let singleShape = QiangzhiJwxtParser.weekContextShape(text: "第4周", matched: "4")
+        XCTAssertFalse(singleShape.contains("-"), "单值不应带连字符，实际：\(singleShape)")
+
+        // 签名里绝不能残留课程名 / 教师名里的汉字原文。
+        XCTAssertFalse(rangeShape.contains("周"), "形态签名不应保留原文汉字：\(rangeShape)")
+    }
+
     func testFetchTimetableEmitsStageDiagnosticsAndTracksTargetCourses() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [JwxtStubURLProtocol.self]
@@ -346,10 +361,13 @@ final class JwxtTimetableParserTests: XCTestCase {
             report
         )
 
-        // 三门目标课逐段追踪：原文有 / 定位到单元格 / 取到课名 / 解析出 / 最终保留。
-        XCTAssertTrue(report.contains("英语 原文=有 单元格=1 课名=1 解析=1 最终=1"), report)
-        XCTAssertTrue(report.contains("体育 原文=有 单元格=1 课名=1 解析=1 最终=1"), report)
-        XCTAssertTrue(report.contains("高等数学 原文=有 单元格=1 课名=1 解析=1 最终=1"), report)
+        // 三门目标课逐段追踪：原文有 / 定位到单元格 / 段里有 / 取到课名 / 解析出 / 最终保留。
+        XCTAssertTrue(report.contains("英语 原文=有 单元格=1 段=1 课名=1 解析=1 最终=1"), report)
+        XCTAssertTrue(report.contains("体育 原文=有 单元格=1 段=1 课名=1 解析=1 最终=1"), report)
+        XCTAssertTrue(report.contains("高等数学 原文=有 单元格=1 段=1 课名=1 解析=1 最终=1"), report)
+        // ④b 周次形态：本样本是 `1-16(周)`，命中处应是「数字-数字」形态而非单值。
+        XCTAssertTrue(report.contains("④b 周次形态"), report)
+        XCTAssertTrue(report.contains("D-D"), report)
 
         // 安全红线：汇总里只有计数、阶段名与目标课关键词，不含凭证 / Cookie / 令牌字样。
         for banned in ["password", "useraccount", "encoded", "jsessionid", "bzb_jsxsd"] {

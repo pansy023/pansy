@@ -175,12 +175,29 @@ public final class TimetableStore: ObservableObject {
         let visibleIds = Set(visible.map { $0.course.id })
 
         var lines = ["【展示层诊断】"]
+        // 「单值周次」= `weekRange` 里既没有 `-` 也没有 `,`（例如被解析成 "4"）。
+        // 正常的教学周区间是 `1-16` 这种形态；单值课程只会在那一周出现，
+        // 其余周次一律被「非本周」过滤掉 —— 这是「保存了却看不见」的第二大来源。
+        let singleWeekCourses = courses.filter {
+            !$0.weekRange.contains("-") && !$0.weekRange.contains(",")
+        }
+        // 周末两天默认不显示列（`showSaturday` / `showSunday` 默认 false）：
+        // 落在六 / 周日的课会保存成功但没有任何一列可画。
+        let hiddenWeekendCourses = courses.filter {
+            ($0.dayOfWeek == 6 && !settings.showSaturday)
+                || ($0.dayOfWeek == 7 && !settings.showSunday)
+        }
         lines.append(
             "作息节数=\(periodCount) 网格行数=\(gridPeriodCount)"
             + " 显示周次=\(displayedWeek) 已存课程=\(courses.count)"
             + " 本周可见=\(visible.count) 非本周被滤=\(courses.count - visible.count)"
             + " 超出生效作息节数的课=\(courses.filter { $0.endPeriod > periodCount }.count)"
             + " 超出网格行数的课=\(courses.filter { $0.endPeriod > gridPeriodCount }.count)"
+        )
+        lines.append(
+            "周次单值课程=\(singleWeekCourses.count)"
+            + "(正常应为区间如 1-16；单值只会在那一周出现)"
+            + " 周末无列被隐藏=\(hiddenWeekendCourses.count)"
         )
         for keyword in keywords {
             let matched = courses.filter { JwxtParseDiagnostics.contains($0.name, keyword) }
