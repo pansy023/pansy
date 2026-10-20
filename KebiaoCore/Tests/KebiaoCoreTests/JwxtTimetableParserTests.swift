@@ -302,7 +302,10 @@ final class JwxtTimetableParserTests: XCTestCase {
     func testFetchTimetableEmitsStageDiagnosticsAndTracksTargetCourses() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [JwxtStubURLProtocol.self]
-        JwxtStubURLProtocol.setResponder { _ in (200, Data(diagnosticsFixtureHTML.utf8)) }
+        // 先把正文算成局部常量：转义闭包里直接引用实例属性 `diagnosticsFixtureHTML`
+        // 会被 Swift 判为「需要显式 self」（CI 上实测报 error: requires explicit use of 'self'）。
+        let body = Data(diagnosticsFixtureHTML.utf8)
+        JwxtStubURLProtocol.setResponder { _ in (200, body) }
         defer { JwxtStubURLProtocol.setResponder(nil) }
 
         let stubbed = QiangzhiJwxtParser(
