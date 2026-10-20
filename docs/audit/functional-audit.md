@@ -332,6 +332,79 @@
 > —— SwiftUI `SecureField` 在弹窗触发重渲染后丢掉显示内容；它会让之后点「保存设置」
 > 把 Keychain 里的密码覆盖成空串。为避免与登录修复混在一起，留到下一轮单独修。
 >
+> **诚实提示（第十三次更新，2026-10-20 · 覆盖上面第十二次；本轮只加「分段诊断」，不动解析 / 过滤 / 去重，也不动 `JwxtHTML` 扫描器）**：
+>
+> **① 背景**：你反馈「安卓能同步到的英语 / 体育 / 高等数学，iOS 同步后缺失」。定位阶段已确认
+> iOS 自写的 `JwxtHTML` 扫描器与安卓 jsoup 存在**真实差异**（jsoup 有 HTML5 隐式闭合 `td/tr/th`
+> 与 `tbody` 插入，本实现只有显式 `</tag>` 才闭合）；但**本机没有真实课表 HTML 样本**
+> （仓库里只有登录页样本），**不能**据此断言这就是三门课缺失的直接原因。
+> 你因此选定**方案一**：先只加分段计数，做一次真机同步拿到证据，再决定是否动扫描器。
+>
+> **② 本轮只加计数，不改任何解析行为**（逐条对应你的五段要求；实现全在 `QiangzhiJwxtParser.swift`
+> 的 `JwxtParseDiagnostics` 里，埋点是 `diagnostics?.xxx()` 空操作缝，为 `nil` 时解析行为一字不变）：
+> - **① 原始响应**：`status` / HTML 长度 / 原文 `<tr`、`<td` 开闭出现次数 / 三个结构特征串
+>   （`id="timetable"`、`Table1`、`kbcontent`）；请求没拿到响应（传输异常）时记「成功=否」。
+> - **② 表格结构**：每行**直接子 `td` 数**直方图、节次行 `td` 直方图、被跳过行的**原因**
+>   （`th 文本为空` / `th 文本不含「第」「大节」`）、解析树内 `tr/td` 总数、**含 `td` 后代的 `td` 个数**
+>   （嵌套迹象）；并对照「原文 `<td` 数 vs 解析树 `td` 数」，不一致时打 `⚠` 标记 ——
+>   这正是「解析前后表格结构是否一致」的直接证据。
+> - **③ 课程单元格**：`div.kbcontent` 候选累计数、选中了哪个（按 `title=教师` 命中 / 取首个）、
+>   是否走 `div.kbcontent1` 兜底、因空内容跳过了几个单元格。
+> - **④ 课程文本**：每单元格切出多少段、课名成功/失败数（失败原因固定为「font 全被黑名单过滤或无可用 font」）、
+>   周次**命中正则 vs 兜底 `1-20`**、节次**区间命中 vs 大节号×2 兜底**、星期分布。
+> - **⑤ 过滤与保存**：初始解析数 → `mergeDuplicateCourses` 后 → `collapseAdjacentCourses` 后 → 落盘数
+>   （四段分开记，才能归因「被去重/合排吃掉多少」）。
+> - **目标课逐段追踪**：对 `英语` / `体育` / `高等数学` 做**包含式、大小写不敏感**匹配（如「大学英语(一)」命中「英语」），
+>   逐段分别记：`原文` 是否出现 → `单元格` → `课名` → `解析` → `最终`。
+>   刻意不用裸「数学」这类宽词以免误判；某阶段识别不到时**如实记该阶段计数**，
+>   不凭「后续阶段为空」反推丢失环节。
+>
+> **③ 安全红线（与第十二次同一套）**：只记**计数、阶段名与失败原因**；
+> 不输出账号 / 密码 / Cookie 值 / 会话令牌 / `encoded`；
+> **不输出整份 HTML**，也不输出教师 / 班级等整表个人信息（唯一允许出现的原文是三个**目标课关键词**）。
+> 由本轮新增单测 `testFetchTimetableEmitsStageDiagnosticsAndTracksTargetCourses` 兜底
+> （断言汇总里不含 `password` / `useraccount` / `encoded` / `jsessionid` / `bzb_jsxsd`）。
+>
+> **④ 真机怎么看**：诊断汇总是多行文本，追加在「刷新课表」按钮**下方**的状态文本
+> （`account.status.sync`）后面；弹窗（「提示」Alert）保持简短，不塞长文本。
+> 同步成功与失败**都会**追加（失败时若连抓课表都没走到，则为空、不追加）。
+> 判读办法：`原文=无` ⇒ 原始响应里就没有这门课；`原文=有` 但 `单元格=0` ⇒ 丢在表格结构/扫描器一环
+> （② 行同时会出现 `⚠ 解析树 td(…) ≠ 原文 <td(…)`）；`单元格>0` 但 `课名=0` ⇒ 丢在课名抽取；
+> `解析>0` 但 `最终=0` ⇒ 被去重/合排吃掉。
+>
+> **⑤ 本轮**没有**做**：`JwxtHTML` 扫描器一行未改；隐式闭合未修；课程解析 / 过滤 / 去重规则未改；
+> 登录 / Cookie / 重定向修复原样保留。**待真机诊断证据出来后**，再决定是否修扫描器并补回归测试。
+>
+> **⑥ CI 状态（run `39375705112` / commit `af94b8f3`）**：**三个 job 全部 success**，
+> 非 success 的 step 数为 0（含末尾闸门「测试未全部通过即让工作流失败」= success）。数字取自日志原文：
+> - `KebiaoCore 单元测试`：`[279/279]` —— 279 条全部执行（278 + 本轮新增 1 条），
+>   本轮新用例在日志里可见：`[46/279] testFetchTimetableEmitsStageDiagnosticsAndTracksTargetCourses`；整份日志无 `error:`；
+> - App 层单元测试：`Executed 3 tests, with 0 failures`；
+> - XCUITest：**`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`**（839.142 s）。
+>
+> **⑦ 本轮第一提交 `1a8eb6f8` 的 CI 是红的（如实记录）**：红在 `KebiaoCore 单元测试` 的 `swift test`，
+> 原因是**新增测试文件本身的编译错误** —— 转义闭包里直接引用实例属性
+> （`error: reference to property 'diagnosticsFixtureHTML' in closure requires explicit use of 'self'`，
+> 日志原文，落在 `JwxtTimetableParserTests.swift:305`）。生产侧未受影响：同一次 run 的
+> `生成工程并编译 iOS App` 与 `App 单元测试 + XCUITest` 都是 success。
+> 修法照既有用例：先把正文算成局部常量再进闭包（commit `af94b8f3`）。
+>
+> **⑧ 产物级自测（本轮 artifact 解包核验）**：`Kebiao-unsigned.ipa` **1,307,855 B**，
+> SHA256 `5480282E243F7A73B463AC2E15617AE2F69D862F786F2E7338217D58F3CA9E41`，
+> 已覆盖固定交付路径 `c:\Users\Pansy\TREA\IOS KEBIAO\Kebiao-unsigned.ipa`。
+> 主二进制 `Payload/Kebiao.app/Kebiao`（**2,418,464 B**）按 **UTF-8 字节序列**搜到本轮独有的判别位：
+> `课表解析诊断`、`目标课追踪`、`JwxtParseDiagnostics`、`原始响应 成功=`、`过滤与保存 初始=`、
+> `候选累计=`、`特征(timetable=` —— 上一版构建不可能有这些串。阴性对照：随意编的、
+> 本项目不可能存在的串确认 **ABSENT**，证明这次搜索有区分力。
+> **两处如实说明**：① 逐片段 100% 命中的核验**没有**做完（Swift 字符串常量在二进制里按片段+对齐存放，
+> 若干 ASCII 片段如 `tr=` 未搜到），这里只声明「上述判别位确实进了产物」，不据此作其他推断；
+> ② 本轮**没有**在 IPA 里核验诊断文案的完整渲染，那段文本的真机观感仍属未验证（见 ⑨）。
+>
+> **⑨ 仍然没有验证的（本轮的核心）**：**三门课到底在哪一环丢，只能在真机上同步一次才知道** ——
+> 本机是 Windows、无 Xcode / 模拟器 / Swift 工具链，且被学校 WAF 按 IP 拦截，无法复现同步流程。
+> CI 的 279 条单测（含本轮新用例用的是**按 recon 文档结构手工仿真的 HTML，不是真实响应**）
+> + 20 条 XCUITest **证明不了**真机同步链路对三门课的取舍。判读方法见 ④。
+>
 > **诚实提示（第十二次更新，2026-10-20 · 覆盖上面第十一次；本轮只加诊断，不动 Cookie 管理）**：
 >
 > **① 背景**：你反馈「同一账号、同一密码浏览器能登、App 报被跳回登录页」，我定位到
@@ -1020,17 +1093,17 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 
 ## 7. 状态口径（九种状态，**不能互相替代**）
 
-以下「当前」= CI run `39345692284` / commit `d4c6c761` 的真实结果（**轮 12**，2026-10-20；三个 job 全 success，非 success step 数为 0）。
+以下「当前」= CI run `39375705112` / commit `af94b8f3` 的真实结果（**轮 13**，2026-10-20；三个 job 全 success，非 success step 数为 0）。
 
 | 状态 | 当前 |
 | --- | --- |
 | 已完成静态代码检查 | ✅ 是（代码路径逐条读过） |
-| 已完成单元测试（`KebiaoCore`，`swift test`） | ✅ **是**：**278 条**全部执行完（日志跑到 `[278/278]`），整份日志无 failure/error，job = success |
+| 已完成单元测试（`KebiaoCore`，`swift test`） | ✅ **是**：**279 条**全部执行完（日志跑到 `[279/279]`），整份日志无 failure/error，job = success |
 | 已完成单元测试（App 层，`KebiaoTests`） | ✅ **是**：3 条，0 失败（`Executed 3 tests, with 0 failures`） |
 | 已成功编译 iOS 应用 | ✅ **是**：job「生成工程并编译 iOS App」success |
-| 已在模拟器启动应用 | ✅ **是**：iPhone 模拟器上真实跑完 20 条 XCUITest（`** TEST SUCCEEDED **`，828.598 s） |
-| 已通过 UI 自动化测试 | ✅ **是**：**20/20 全部通过**（`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`，828.598 s）；闸门步骤 = success，无残留失败用例 |
-| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1,287,992 B，SHA256 `C074DC84…5332`） |
+| 已在模拟器启动应用 | ✅ **是**：iPhone 模拟器上真实跑完 20 条 XCUITest（`** TEST SUCCEEDED **`，839.142 s） |
+| 已通过 UI 自动化测试 | ✅ **是**：**20/20 全部通过**（`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`，839.142 s）；闸门步骤 = success，无残留失败用例 |
+| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1,307,855 B，SHA256 `5480282E…9E41`） |
 | 已签名 | ❓ 由你完成，助手侧无证据 |
 | 已在真机安装 | ❓ 由你完成，助手侧无证据 |
 | 已在真机运行 | ❓ 由你完成，助手侧无证据 |
