@@ -276,6 +276,85 @@ final class JwxtTimetableParserTests: XCTestCase {
             true
         )
     }
+
+    // MARK: - 分段诊断（本轮只加计数，不改解析 / 过滤 / 去重规则）
+
+    /// 仿真 DO 风格样本：**按 `docs/recon/02-jwxt-login-and-parser.md` §4.3 的结构手工仿真**，
+    /// 刻意放进「英语 / 体育 / 高等数学」三门目标课 + 1 个空白单元格。
+    ///
+    /// ⚠️ 本机**没有真实课表响应样本**（仓库里只有登录页样本），所以这份 HTML **不能**用来
+    /// 断言「真机上三门课到底丢在哪一环」—— 那必须等真机同步后看诊断汇总。这条用例只证明：
+    /// 1. 诊断埋点**没有改变**解析结果（同样的输入，课程数与字段照旧）；
+    /// 2. 五段计数与三门目标课的逐段追踪，在该结构下**确实按预期记录**。
+    private let diagnosticsFixtureHTML = """
+    <table id="timetable">
+    <tr><th>节次</th><th>星期一</th><th>星期二</th><th>星期三</th></tr>
+    <tr>
+    <th>第一大节</th>
+    <td><div class="kbcontent"><font title="周次(节次)">1-16(周)[01-02节]</font><br><font title="课程" name="ktmc">大学英语(一)</font><br><font title="教师">张明</font><br><font title="教学楼" name="jxlmc">6号教学楼</font><br><font title="教室">A310</font></div></td>
+    <td><div class="kbcontent"><font title="周次(节次)">1-16(周)[01-02节]</font><br><font title="课程" name="ktmc">体育</font><br><font title="教师">李华</font><br><font title="教室">操场</font></div></td>
+    <td><div class="kbcontent"><font title="周次(节次)">1-16(周)[01-02节]</font><br><font title="课程" name="ktmc">高等数学</font><br><font title="教师">王强</font><br><font title="教室">B101</font></div></td>
+    <td></td>
+    </tr>
+    </table>
+    """
+
+    func testFetchTimetableEmitsStageDiagnosticsAndTracksTargetCourses() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [JwxtStubURLProtocol.self]
+        JwxtStubURLProtocol.setResponder { _ in (200, Data(diagnosticsFixtureHTML.utf8)) }
+        defer { JwxtStubURLProtocol.setResponder(nil) }
+
+        let stubbed = QiangzhiJwxtParser(
+            baseURL: UserCredentials.defaultJwxtUrl,
+            configuration: configuration
+        )
+        let diagnostics = JwxtParseDiagnostics()
+        stubbed.diagnostics = diagnostics
+
+        let courses = try await stubbed.fetchTimetable()
+        let report = diagnostics.summary()
+
+        // 诊断不改解析结果：三门目标课各一门，空白单元格不产生课程。
+        XCTAssertEqual(courses.count, 3)
+        XCTAssertEqual(Set(courses.map(\.name)), ["大学英语(一)", "体育", "高等数学"])
+
+        // 五段都在汇总里出现。
+        for stage in ["① 原始响应", "② 表格", "③ 单元格", "④ 文本", "⑤ 过滤与保存"] {
+            XCTAssertTrue(report.contains(stage), "诊断汇总缺少阶段：\(stage)\n\(report)")
+        }
+        // ① 原文里的 tr / td 出现次数与本样本一致（2 行、4 个 td、4 个闭合）。
+        XCTAssertTrue(report.contains("原文 tr=2"), report)
+        XCTAssertTrue(report.contains("td=4开/4闭"), report)
+        // ② 解析树与原文一致 ⇒ 不应出现「结构不一致」告警。
+        XCTAssertTrue(report.contains("树内 tr=2 td=4 嵌套 td=0"), report)
+        XCTAssertFalse(report.contains("解析树 td"), "结构正常时不应出现不一致告警：\(report)")
+        // ③ 4 个单元格：3 个选中内容、1 个空内容被跳过。
+        XCTAssertTrue(report.contains("选中=3"), report)
+        XCTAssertTrue(report.contains("空内容跳过=1"), report)
+        // ④ 3 段全部取到课名，周次 / 节次都命中而非兜底。
+        XCTAssertTrue(report.contains("段=3 课名成功=3 课名失败=0"), report)
+        XCTAssertTrue(report.contains("周次命中=3/兜底 0"), report)
+        XCTAssertTrue(report.contains("节次区间=3/兜底 0"), report)
+        // ⑤ 三门课没被去重 / 连排合并吃掉，返回数 = 落盘数。
+        XCTAssertTrue(
+            report.contains("初始=3 去重后=3 连排合并后=3 返回(=本地全量覆盖)=3"),
+            report
+        )
+
+        // 三门目标课逐段追踪：原文有 / 定位到单元格 / 取到课名 / 解析出 / 最终保留。
+        XCTAssertTrue(report.contains("英语 原文=有 单元格=1 课名=1 解析=1 最终=1"), report)
+        XCTAssertTrue(report.contains("体育 原文=有 单元格=1 课名=1 解析=1 最终=1"), report)
+        XCTAssertTrue(report.contains("高等数学 原文=有 单元格=1 课名=1 解析=1 最终=1"), report)
+
+        // 安全红线：汇总里只有计数、阶段名与目标课关键词，不含凭证 / Cookie / 令牌字样。
+        for banned in ["password", "useraccount", "encoded", "jsessionid", "bzb_jsxsd"] {
+            XCTAssertFalse(
+                report.lowercased().contains(banned),
+                "诊断汇总出现了不该有的敏感字样：\(banned)\n\(report)"
+            )
+        }
+    }
 }
 
 /// 极简 `URLProtocol` 桩：让 `JwxtSession` 的请求拿到固定响应。

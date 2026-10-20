@@ -171,20 +171,32 @@ struct AccountSyncSettingsView: View {
         syncStatusText = "正在登录教务系统并抓取课表…"
         defer { isSyncingTimetable = false }
 
+        let sync = JwxtTimetableSync()
         do {
-            let courses = try await JwxtTimetableSync().fetchFromJwxt(credentials: credentials)
+            let courses = try await sync.fetchFromJwxt(credentials: credentials)
             if courses.isEmpty {
-                syncStatusText = "未获取到课表数据"
+                // 成功拿到响应但一门课都没解析出来：完整诊断最有价值（哪一环丢的）。
+                syncStatusText = withParseDiagnostics("未获取到课表数据", sync.lastSyncDiagnostics)
                 notice = Notice(text: "未获取到课表数据；已保留本地原有课程。")
             } else {
                 store.replaceAllCourses(with: courses)
-                syncStatusText = "已从教务系统覆盖本地课表，共 \(courses.count) 门课程。"
-                notice = Notice(text: syncStatusText)
+                let headline = "已从教务系统覆盖本地课表，共 \(courses.count) 门课程。"
+                syncStatusText = withParseDiagnostics(headline, sync.lastSyncDiagnostics)
+                notice = Notice(text: headline)
             }
         } catch {
-            syncStatusText = "刷新失败: \(error.localizedDescription)"
-            notice = Notice(text: syncStatusText)
+            let headline = "刷新失败: \(error.localizedDescription)"
+            syncStatusText = withParseDiagnostics(headline, sync.lastSyncDiagnostics)
+            notice = Notice(text: headline)
         }
+    }
+
+    /// 把同步层的**分段诊断汇总**追加到状态文案后面（诊断为空时原样返回）。
+    ///
+    /// 弹窗保持简短（只放结论），完整诊断放在按钮下方的状态文本里 ——
+    /// 真机上要能直接看到「英语 / 体育 / 高等数学 分别在哪一环丢」。
+    private func withParseDiagnostics(_ headline: String, _ diagnostics: String) -> String {
+        diagnostics.isEmpty ? headline : headline + "\n\n" + diagnostics
     }
 
     /// 把账号与同步草稿落地（原版也是 pending 态，点保存才写；`SettingsScreenKt.java:4675-4676`）。

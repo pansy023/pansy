@@ -30,13 +30,24 @@ import Foundation
 /// 这里照做：整个 `fetchFromJwxt` 期间只建一个 `JwxtSession`，把登录的 Cookie
 /// 直接延续给抓课表那一跳。会话**不跨调用持久化**（每次 `fetchFromJwxt` 新建），
 /// 与原版「每次同步 new 一个 parser」一致。
-public struct JwxtTimetableSync: @unchecked Sendable {
+public final class JwxtTimetableSync: @unchecked Sendable {
 
     /// 可选日志出口（原版 `LogManager` 的等价缝）。iOS 端不新增日志基础设施，默认丢弃。
     public let log: (@Sendable (String) -> Void)?
 
     /// 测试用 `URLProtocol` 桩时传入装了 `protocolClasses` 的配置；生产传 `nil`。
     public let configuration: URLSessionConfiguration?
+
+    /// 最近一次「抓课表」那一跳的**分段诊断汇总**（多行文本；真机上直接展示在状态文案里）。
+    ///
+    /// 成功与失败都写：定位「英语 / 体育 / 高等数学 在哪一环丢」靠的就是它。
+    /// 根本没走到抓课表（例如登录就没过）时为空串 —— 那种情况由错误文案里的
+    /// 登录轨迹 + Cookie 诊断覆盖，不重复追加。
+    ///
+    /// 为什么这个类型是 `class` 而不是 `struct`：`fetchFromJwxt` 由调用方在 `let`
+    /// 临时实例上直接调用，`struct` 里的 `attempt` 无法把结果写回调用方看得见的地方。
+    /// 行为与初始化方式（`JwxtTimetableSync()` / `JwxtTimetableSync(log:configuration:)`）不变。
+    public private(set) var lastSyncDiagnostics = ""
 
     public init(
         log: (@Sendable (String) -> Void)? = nil,
@@ -99,7 +110,20 @@ public struct JwxtTimetableSync: @unchecked Sendable {
         }
 
         let parser = QiangzhiJwxtParser(session: session, log: log)
-        let courses = try await parser.fetchTimetable()
+        // 分段诊断：覆盖 ① 原始响应 ② 表格结构 ③ 单元格 ④ 课程文本 ⑤ 过滤与保存，
+        // 并逐段追踪「英语 / 体育 / 高等数学」。只记计数与阶段名，不含账号 / Cookie / 令牌。
+        let diagnostics = JwxtParseDiagnostics()
+        parser.diagnostics = diagnostics
+        let courses: [Course]
+        do {
+            courses = try await parser.fetchTimetable()
+        } catch {
+            // 失败也要把已记到的诊断带出去：至少能看到 ① 的 status/len/特征串
+            // 与 ② 的表格结构计数，「课在哪一环丢」才有证据可言。
+            lastSyncDiagnostics = diagnostics.summary()
+            throw error
+        }
+        lastSyncDiagnostics = diagnostics.summary()
         return courses.enumerated().map { index, course in
             var copy = course
             copy.id = index + 1

@@ -55,6 +55,12 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
     /// 可选日志出口。原版走 `LogManager`；iOS 端不新增日志基础设施，默认丢弃。
     private let log: (@Sendable (String) -> Void)?
 
+    /// 可选**分段诊断计数器**（本轮为定位「英语 / 体育 / 高等数学 在哪一环丢」而加）。
+    ///
+    /// 由同步层（`JwxtTimetableSync`）构造后赋值，与 `log` 同一个套路。
+    /// 为 `nil` 时所有埋点都是 `diagnostics?.xxx()` 的空操作，**不改变任何解析结果**。
+    public var diagnostics: JwxtParseDiagnostics?
+
     public init(session: JwxtSession, log: (@Sendable (String) -> Void)? = nil) {
         self.session = session
         self.log = log
@@ -85,19 +91,35 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
         let url = session.secureBaseURL + QiangzhiJwxtParser.timetablePath
         let referer = session.timetableReferer
             ?? (session.secureBaseURL + JwxtLoginClient.mainFramePath)
-        let response = try await session.send(
-            url,
-            options: JwxtSession.RequestOptions(
-                method: "GET",
-                headers: [
-                    "Referer": referer,
-                    "User-Agent": JwxtSession.userAgent,
-                ]
+        // ① 原始响应（成功分支）：状态码、HTML 长度、原文里的 tr / td 出现次数、
+        //    以及三个结构特征串。**没拿到响应**时（传输异常）只记一条「成功=否」。
+        let response: JwxtSession.Response
+        do {
+            response = try await session.send(
+                url,
+                options: JwxtSession.RequestOptions(
+                    method: "GET",
+                    headers: [
+                        "Referer": referer,
+                        "User-Agent": JwxtSession.userAgent,
+                    ]
+                )
             )
-        )
+        } catch {
+            diagnostics?.recordResponseFailure()
+            throw error
+        }
 
         let finalURL = response.finalURL?.absoluteString ?? url
         let body = response.body
+
+        diagnostics?.recordResponse(
+            status: response.statusCode,
+            body: body,
+            hasTimetableId: body.contains("id=\"timetable\"") || body.contains("id='timetable'"),
+            hasTable1: body.contains("Table1"),
+            hasKbcontent: body.contains("kbcontent")
+        )
 
         // 会话失效：**按正文判定**，只信最终 URL / Location 会漏（文件头「有意差异 4」）。
         if QiangzhiJwxtParser.isLoginPage(
@@ -118,9 +140,16 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
                 diagnostic: QiangzhiJwxtParser.diagnose(response)
             )
         }
-        return QiangzhiJwxtParser.collapseAdjacentCourses(
-            QiangzhiJwxtParser.mergeDuplicateCourses(parsed)
-        )
+        // ⑤ 过滤与保存：把两层去重前后的计数分开记 —— 「被过滤 / 去重吃掉多少」才可归因。
+        diagnostics?.recordParsedCourses(parsed)
+        let merged = QiangzhiJwxtParser.mergeDuplicateCourses(parsed)
+        diagnostics?.recordAfterMerge(merged)
+        let collapsed = QiangzhiJwxtParser.collapseAdjacentCourses(merged)
+        diagnostics?.recordFinal(collapsed)
+        // ⑤「实际保存」= 交给 UI 落盘的门数：与本方法返回的数组一一对应
+        //    （`TimetableStore.replaceAllCourses` 是原样全量覆盖，不改数量）。
+        diagnostics?.recordSaved(collapsed.count)
+        return collapsed
     }
 
     // MARK: - 抓取失败判定与诊断（文件头「有意差异 4」）
@@ -193,8 +222,13 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
     ///
     /// 从 `parseDoStyle` 里原样拆出，供严格选择器与宽松兜底共用，避免两份实现漂移。
     private func parseDoStyleTable(_ table: JwxtHTMLNode, in document: JwxtHTMLDocument) -> [Course] {
+        diagnostics?.recordTableAttempt()
         let rows = document.select("tr", from: table)
         guard !rows.isEmpty else { return [] }
+
+        // ② 表格结构：解析树里的 tr / td 总数与「td 嵌套」迹象。
+        //    与 ① 记下的「原文 <td 出现次数」对照，就是「解析前后结构是否一致」的证据。
+        recordTableTreeShape(table)
 
         var out: [Course] = []
         var periodRow = 0
@@ -203,20 +237,51 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
             // 选择器必须限定在**本行**内（jsoup 的 `row.selectFirst("th")` 只看该元素子树）。
             let header = (document.selectFirst("th", from: row)?.text() ?? "")
                 .replacingOccurrences(of: " ", with: "")
-            guard header.contains("第"), header.contains("大节") else { continue }
-            periodRow += 1
-
             // `:191` 的 `element.select("> td")` —— 直接子 td（见文件头「有意差异 1」）。
             let cells = row.children.filter { $0.tag == "td" }
+            let isPeriodRow = header.contains("第") && header.contains("大节")
+            // ② 每行直接子 td 数量直方图 + 被跳过行的原因（只统计，不参与任何判定）。
+            diagnostics?.recordRow(
+                header: header,
+                directTdCount: cells.count,
+                isPeriodRow: isPeriodRow
+            )
+            guard isPeriodRow else { continue }
+            periodRow += 1
+
             for (offset, cell) in cells.enumerated() {
                 let dayOfWeek = offset + 1
                 guard dayOfWeek >= 1, dayOfWeek < 8 else { continue }
+                // ③ 单元格级目标课追踪：先看**整格文本**里有没有出现目标课关键词。
+                // 用整格文本而不是原始 innerHTML，是因为课名可能被标签切开（`英</font>语`）。
+                diagnostics?.recordCellText(cell.text())
                 let content = extractDoCellContent(cell, in: document)
                 guard !QiangzhiJwxtParser.isBlank(content) else { continue }
                 out.append(contentsOf: parseKbContent(content, periodRow: periodRow, dayOfWeek: dayOfWeek))
             }
         }
         return out
+    }
+
+    /// 统计 `table` 子树在**解析树**里的 tr / td 数，以及含 `td` 后代的 `td` 个数（嵌套迹象）。
+    ///
+    /// 只读遍历，返回与解析结果无关。
+    private func recordTableTreeShape(_ table: JwxtHTMLNode) {
+        guard let diagnostics = diagnostics else { return }
+        var trCount = 0
+        var tdCount = 0
+        var nestedTdCount = 0
+        for node in table.descendantElements() {
+            if node.tag == "tr" { trCount += 1 }
+            if node.tag == "td" {
+                tdCount += 1
+                // `descendantElements()` 把自身排在最前，`dropFirst()` 之后才是真后代。
+                if node.descendantElements().dropFirst().contains(where: { $0.tag == "td" }) {
+                    nestedTdCount += 1
+                }
+            }
+        }
+        diagnostics.recordTableTree(tr: trCount, td: tdCount, nestedTd: nestedTdCount)
     }
 
     /// 单元格内容提取（`QiangzhiJwxtParser.java:229-292`，recon doc §4.3）。
@@ -230,15 +295,23 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
             .filter { $0.range(of: "<font", options: .caseInsensitive) != nil }
 
         var chosen: String?
+        var chosenByTeacherTitle = false
         for html in candidates
         where html.contains("title='教师'") || html.contains("title=\"教师\"") || html.contains("title=教师") {
             chosen = html
+            chosenByTeacherTitle = true
             break
         }
         if chosen == nil { chosen = candidates.first }
 
         let trimmed = QiangzhiJwxtParser.kotlinTrim(chosen ?? "")
         if !QiangzhiJwxtParser.isBlank(trimmed), trimmed != "&nbsp;" {
+            // ③ 单元格：候选数 / 选中了哪一个 / 是否走了 kbcontent1 兜底。
+            diagnostics?.recordCellChosen(
+                candidates: candidates.count,
+                byTeacherTitle: chosenByTeacherTitle,
+                usedKbcontent1Fallback: false
+            )
             return trimmed
         }
 
@@ -246,9 +319,18 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
             let html = node.innerHTML(in: document)
             guard html.range(of: "<font", options: .caseInsensitive) != nil else { continue }
             let fallback = QiangzhiJwxtParser.kotlinTrim(html)
-            if QiangzhiJwxtParser.isBlank(fallback) || fallback == "&nbsp;" { return "" }
+            if QiangzhiJwxtParser.isBlank(fallback) || fallback == "&nbsp;" {
+                diagnostics?.recordCellSkipped(candidates: candidates.count)
+                return ""
+            }
+            diagnostics?.recordCellChosen(
+                candidates: candidates.count,
+                byTeacherTitle: chosenByTeacherTitle,
+                usedKbcontent1Fallback: true
+            )
             return fallback
         }
+        diagnostics?.recordCellSkipped(candidates: candidates.count)
         return ""
     }
 
@@ -540,13 +622,23 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
     /// 兜底用大节号 `periodRow * 2 - 1` / `periodRow * 2`（`:898-909`）。
     public func parseKbContent(_ html: String, periodRow: Int, dayOfWeek: Int) -> [Course] {
         var out: [Course] = []
-        for segment in QiangzhiJwxtParser.splitCourseSegments(html) {
-            guard let name = extractCourseName(segment) else { continue }
+        let segments = QiangzhiJwxtParser.splitCourseSegments(html)
+        // ④ 课程文本：本单元格切出多少段。
+        diagnostics?.recordSegments(segments.count)
+        for segment in segments {
+            guard let name = extractCourseName(segment) else {
+                // ④ 取不到课名 ⇒ 整段被跳过（原因见 summary 的固定说明）。
+                diagnostics?.recordSegmentNameMissing()
+                continue
+            }
+            diagnostics?.recordSegmentName(name, dayOfWeek: dayOfWeek)
             let teacher = extractTeacher(segment)
             let location = extractLocationMerged(segment)
             let weekRange = extractWeekRange(segment)
             let meta = QiangzhiJwxtParser.parseWeekMeta(weekRange: weekRange, html: segment)
             let periodRange = QiangzhiJwxtParser.extractPeriodRange(segment)
+            // ④ 节次：优先区间命中，否则回落到「大节号 × 2」兜底。
+            diagnostics?.recordSegmentPeriod(primaryRangeHit: periodRange != nil)
 
             let startPeriod: Int
             if let periodRange {
@@ -726,8 +818,12 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
         if let group = QiangzhiJwxtParser.firstGroup(
             #"(\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*)\((?:周|单|双)\)"#, in: text
         ), !QiangzhiJwxtParser.isBlank(group) {
+            // ④ 周次命中正则（真解析成功，不是兜底值）。
+            diagnostics?.recordWeekRangeMatched()
             return group
         }
+        // ④ 周次未命中 ⇒ 返回兜底 `1-20`；这一条专门用来区分「真周次」与「兜底值」。
+        diagnostics?.recordWeekRangeFallback()
         return "1-20"
     }
 
@@ -958,5 +1054,382 @@ public enum JwxtFetchError: Error, LocalizedError, Equatable, Sendable {
         case let .pageStructureUnsupported(diagnostic):
             return "课表页结构无法识别（诊断：\(diagnostic)）"
         }
+    }
+}
+
+// MARK: - 分段诊断计数器
+
+/// 课表同步链路的**分段诊断计数器**（本轮只加计数，**不改**任何解析 / 过滤 / 去重规则）。
+///
+/// 背景：安卓端能同步到的「英语 / 体育 / 高等数学」在 iOS 端缺失。已证实 iOS 自写的
+/// `JwxtHTML` 扫描器与安卓的 jsoup 有真实差异（jsoup 有 HTML5 隐式闭合，本实现只有
+/// 显式 `</tag>` 才闭合），但**本机没有真实课表 HTML 样本**，无法证明这就是三门课
+/// 缺失的直接原因。所以本轮只把「课在哪一环丢」用真机数据钉出来，再决定要不要动扫描器。
+///
+/// 记录分五段（与需求逐条对应）：
+/// ① 原始响应 ② 表格结构 ③ 课程单元格 ④ 课程文本 ⑤ 过滤与保存，
+/// 外加对「英语 / 体育 / 高等数学」的**逐段**追踪。
+///
+/// ## 安全性（硬要求）
+///
+/// 只记**计数、阶段名与失败原因**：不记账号 / 密码 / Cookie 值 / 会话令牌，
+/// 也不把整张课表的教师、班级等个人信息写进日志。唯一允许出现的原文是
+/// **目标课关键词**（`targetKeywords`）—— 那是本轮要追踪的对象。
+///
+/// ## 线程安全
+///
+/// 埋点可能来自会话 / 解析的任意线程（`@unchecked Sendable` + `NSLock` 保护）。
+public final class JwxtParseDiagnostics: @unchecked Sendable {
+
+    /// 目标课程关键词。
+    ///
+    /// **包含式**匹配（如「大学英语(一)」含「英语」即命中）、**大小写不敏感**。
+    /// 刻意不用裸「数学」「英语课」这类宽词，避免把无关课程误判成目标课。
+    public static let targetKeywords: [String] = ["英语", "体育", "高等数学"]
+
+    private let lock = NSLock()
+
+    // MARK: ① 原始响应
+    private var responseStatus: Int?
+    private var responseFailed = false
+    private var htmlLength = 0
+    private var rawTrCount = 0
+    private var rawTdOpenCount = 0
+    private var rawTdCloseCount = 0
+    private var hasTimetableId = false
+    private var hasTable1 = false
+    private var hasKbcontent = false
+
+    // MARK: ② 表格结构
+    private var tableAttempts = 0
+    private var treeTrCount = 0
+    private var treeTdCount = 0
+    private var treeNestedTdCount = 0
+    private var rowTdHistogram: [Int: Int] = [:]
+    private var periodRowTdHistogram: [Int: Int] = [:]
+    private var periodRows = 0
+    private var skippedRows: [String: Int] = [:]
+
+    // MARK: ③ 单元格
+    private var cellCandidateTotal = 0
+    private var cellChosenCount = 0
+    private var cellChosenByTeacherTitle = 0
+    private var cellChosenFirst = 0
+    private var cellKbcontent1Fallback = 0
+    private var cellSkippedEmpty = 0
+
+    // MARK: ④ 课程文本
+    private var segmentTotal = 0
+    private var segmentNameExtracted = 0
+    private var segmentNameMissing = 0
+    private var weekRangeMatched = 0
+    private var weekRangeFallback = 0
+    private var periodRangePrimary = 0
+    private var periodRangeFallback = 0
+    private var dayHistogram: [Int: Int] = [:]
+
+    // MARK: ⑤ 过滤与保存
+    private var initialCourseCount = 0
+    private var afterMergeCount = 0
+    private var afterCollapseCount = 0
+    private var savedCourseCount = 0
+
+    // MARK: 目标课追踪
+    private var targetMentionedInRawHTML: Set<String> = []
+    private var targetLocatedInCell: [String: Int] = [:]
+    private var targetNameExtracted: [String: Int] = [:]
+    private var targetInParsed: [String: Int] = [:]
+    private var targetInFinal: [String: Int] = [:]
+
+    public init() {}
+
+    // MARK: - 埋点（只加计数；返回值与解析结果无关）
+
+    /// ① 拿到了响应。
+    func recordResponse(
+        status: Int,
+        body: String,
+        hasTimetableId: Bool,
+        hasTable1: Bool,
+        hasKbcontent: Bool
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        responseStatus = status
+        htmlLength = body.count
+        rawTrCount = JwxtParseDiagnostics.occurrences(of: "<tr", in: body)
+        rawTdOpenCount = JwxtParseDiagnostics.occurrences(of: "<td", in: body)
+        rawTdCloseCount = JwxtParseDiagnostics.occurrences(of: "</td", in: body)
+        self.hasTimetableId = hasTimetableId
+        self.hasTable1 = hasTable1
+        self.hasKbcontent = hasKbcontent
+        for keyword in JwxtParseDiagnostics.targetKeywords
+        where JwxtParseDiagnostics.contains(body, keyword) {
+            targetMentionedInRawHTML.insert(keyword)
+        }
+    }
+
+    /// ① 请求根本没拿到响应（传输层异常）。`reason` 不记 —— 避免把可能含 URL 的原文带出来。
+    func recordResponseFailure() {
+        lock.lock()
+        defer { lock.unlock() }
+        responseFailed = true
+    }
+
+    func recordTableAttempt() {
+        lock.lock()
+        defer { lock.unlock() }
+        tableAttempts += 1
+    }
+
+    func recordTableTree(tr: Int, td: Int, nestedTd: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        treeTrCount += tr
+        treeTdCount += td
+        treeNestedTdCount += nestedTd
+    }
+
+    /// ② 一行：直接子 `td` 数量入直方图；非节次行按原因计入「被跳过」。
+    func recordRow(header: String, directTdCount: Int, isPeriodRow: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        rowTdHistogram[directTdCount, default: 0] += 1
+        guard isPeriodRow else {
+            let reason = header.isEmpty ? "th 文本为空" : "th 文本不含「第」「大节」"
+            skippedRows[reason, default: 0] += 1
+            return
+        }
+        periodRows += 1
+        periodRowTdHistogram[directTdCount, default: 0] += 1
+    }
+
+    /// ③ 一个单元格的**整格文本**里是否出现目标课关键词（定位到「课程单元格」这一环）。
+    func recordCellText(_ text: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        for keyword in JwxtParseDiagnostics.targetKeywords
+        where JwxtParseDiagnostics.contains(text, keyword) {
+            targetLocatedInCell[keyword, default: 0] += 1
+        }
+    }
+
+    /// ③ 单元格选出了内容：记候选数、选中了哪一个、是否走了 `kbcontent1` 兜底。
+    func recordCellChosen(candidates: Int, byTeacherTitle: Bool, usedKbcontent1Fallback: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        cellCandidateTotal += candidates
+        cellChosenCount += 1
+        if byTeacherTitle { cellChosenByTeacherTitle += 1 } else { cellChosenFirst += 1 }
+        if usedKbcontent1Fallback { cellKbcontent1Fallback += 1 }
+    }
+
+    /// ③ 单元格内容为空被跳过（`kbcontent` / `kbcontent1` 都没拿到可用内容）。
+    func recordCellSkipped(candidates: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        cellCandidateTotal += candidates
+        cellSkippedEmpty += 1
+    }
+
+    /// ④ 本次 `parseKbContent` 从单元格里切出多少段。
+    func recordSegments(_ count: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        segmentTotal += count
+    }
+
+    /// ④ 一段成功取到课名（同时按日入直方图，并记目标课命中）。
+    func recordSegmentName(_ name: String, dayOfWeek: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        segmentNameExtracted += 1
+        dayHistogram[dayOfWeek, default: 0] += 1
+        for keyword in JwxtParseDiagnostics.targetKeywords
+        where JwxtParseDiagnostics.contains(name, keyword) {
+            targetNameExtracted[keyword, default: 0] += 1
+        }
+    }
+
+    /// ④ 一段取不到课名 ⇒ 整段被跳过。
+    func recordSegmentNameMissing() {
+        lock.lock()
+        defer { lock.unlock() }
+        segmentNameMissing += 1
+    }
+
+    /// ④ 周次**命中正则**（真值）。
+    func recordWeekRangeMatched() {
+        lock.lock()
+        defer { lock.unlock() }
+        weekRangeMatched += 1
+    }
+
+    /// ④ 周次**未命中正则** ⇒ 返回兜底 `1-20`。
+    func recordWeekRangeFallback() {
+        lock.lock()
+        defer { lock.unlock() }
+        weekRangeFallback += 1
+    }
+
+    /// ④ 节次：`[xx-yy节]` 区间命中（primary）或回落「大节号 × 2」兜底。
+    func recordSegmentPeriod(primaryRangeHit: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        if primaryRangeHit { periodRangePrimary += 1 } else { periodRangeFallback += 1 }
+    }
+
+    /// ⑤ 去重前的课程数 + 目标课命中数。
+    func recordParsedCourses(_ courses: [Course]) {
+        lock.lock()
+        defer { lock.unlock() }
+        initialCourseCount = courses.count
+        recordTargets(courses, into: &targetInParsed)
+    }
+
+    /// ⑤ `mergeDuplicateCourses` 之后的课程数。
+    func recordAfterMerge(_ courses: [Course]) {
+        lock.lock()
+        defer { lock.unlock() }
+        afterMergeCount = courses.count
+    }
+
+    /// ⑤ `collapseAdjacentCourses` 之后的课程数 + 目标课命中数。
+    func recordFinal(_ courses: [Course]) {
+        lock.lock()
+        defer { lock.unlock() }
+        afterCollapseCount = courses.count
+        recordTargets(courses, into: &targetInFinal)
+    }
+
+    /// ⑤ 交给 UI 落盘（`replaceAllCourses`）的课程数。
+    func recordSaved(_ count: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        savedCourseCount = count
+    }
+
+    // MARK: - 汇总
+
+    /// 汇总成一段紧凑多行文本（真机上直接看这一段）。
+    ///
+    /// 什么都没记到（例如登录就没过、根本没走到抓课表）时返回 `""`，
+    /// 调用方据此决定不追加，避免往错误文案里塞一段空表头。
+    public func summary() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard responseStatus != nil || responseFailed || tableAttempts > 0 else { return "" }
+
+        var lines: [String] = ["【课表解析诊断】"]
+
+        // ① 原始响应
+        if responseFailed {
+            lines.append("① 原始响应 成功=否（请求没拿到响应，原因见上方错误文案）")
+        } else if let status = responseStatus {
+            lines.append(
+                "① 原始响应 成功=\(JwxtParseDiagnostics.yesNo((200..<300).contains(status)))"
+                + " status=\(status) len=\(htmlLength)"
+                + " 原文 tr=\(rawTrCount) td=\(rawTdOpenCount)开/\(rawTdCloseCount)闭"
+                + " 特征(timetable=\(JwxtParseDiagnostics.yesNo(hasTimetableId))"
+                + " Table1=\(JwxtParseDiagnostics.yesNo(hasTable1))"
+                + " kbcontent=\(JwxtParseDiagnostics.yesNo(hasKbcontent)))"
+            )
+        }
+
+        // ② 表格结构
+        var second = "② 表格 尝试=\(tableAttempts) 节次行=\(periodRows)"
+            + " 行-td 直方图=\(JwxtParseDiagnostics.formatIntMap(rowTdHistogram))"
+            + " 节次行-td 直方图=\(JwxtParseDiagnostics.formatIntMap(periodRowTdHistogram))"
+            + " 跳过行=\(JwxtParseDiagnostics.formatStringMap(skippedRows))"
+            + " 树内 tr=\(treeTrCount) td=\(treeTdCount) 嵌套 td=\(treeNestedTdCount)"
+        if responseStatus != nil, treeTdCount != rawTdOpenCount {
+            // 解析前后结构不一致的直接证据：原文里的 <td 数与解析树里的 td 节点数对不上。
+            second += " ⚠ 解析树 td(\(treeTdCount)) ≠ 原文 <td(\(rawTdOpenCount))：存在漏闭合/嵌套错位迹象"
+        }
+        lines.append(second)
+
+        // ③ 单元格
+        lines.append(
+            "③ 单元格 候选累计=\(cellCandidateTotal) 选中=\(cellChosenCount)"
+            + "(按 title=教师 命中 \(cellChosenByTeacherTitle) / 取首个 \(cellChosenFirst))"
+            + " kbcontent1 兜底=\(cellKbcontent1Fallback) 空内容跳过=\(cellSkippedEmpty)"
+        )
+
+        // ④ 课程文本
+        lines.append(
+            "④ 文本 段=\(segmentTotal) 课名成功=\(segmentNameExtracted) 课名失败=\(segmentNameMissing)"
+            + "(原因：font 全被黑名单过滤或无可用 font)"
+            + " 周次命中=\(weekRangeMatched)/兜底 \(weekRangeFallback)"
+            + " 节次区间=\(periodRangePrimary)/兜底 \(periodRangeFallback)"
+            + " 日分布=\(JwxtParseDiagnostics.formatIntMap(dayHistogram))"
+        )
+
+        // ⑤ 过滤与保存
+        lines.append(
+            "⑤ 过滤与保存 初始=\(initialCourseCount) 去重后=\(afterMergeCount)"
+            + " 连排合并后=\(afterCollapseCount) 返回(=本地全量覆盖)=\(savedCourseCount)"
+        )
+
+        // 目标课逐段追踪
+        lines.append("目标课追踪（包含式、大小写不敏感）：")
+        for keyword in JwxtParseDiagnostics.targetKeywords {
+            let raw = JwxtParseDiagnostics.yesNo(targetMentionedInRawHTML.contains(keyword))
+            let cell = targetLocatedInCell[keyword] ?? 0
+            let name = targetNameExtracted[keyword] ?? 0
+            let parsed = targetInParsed[keyword] ?? 0
+            let final = targetInFinal[keyword] ?? 0
+            var line = "  \(keyword) 原文=\(raw) 单元格=\(cell) 课名=\(name) 解析=\(parsed) 最终=\(final)"
+            if parsed > final {
+                line += "（被去重/合排吃掉 \(parsed - final) 条）"
+            }
+            lines.append(line)
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - 工具（全部无副作用）
+
+    private func recordTargets(_ courses: [Course], into store: inout [String: Int]) {
+        for keyword in JwxtParseDiagnostics.targetKeywords {
+            store[keyword, default: 0] += courses.filter {
+                JwxtParseDiagnostics.contains($0.name, keyword)
+            }.count
+        }
+    }
+
+    static func yesNo(_ value: Bool) -> String { value ? "有" : "无" }
+
+    /// 包含式、大小写不敏感匹配。
+    static func contains(_ haystack: String, _ keyword: String) -> Bool {
+        guard !haystack.isEmpty, !keyword.isEmpty else { return false }
+        return haystack.range(of: keyword, options: .caseInsensitive) != nil
+    }
+
+    /// `needle` 在 `haystack` 里出现多少次（大小写不敏感、不重叠）。
+    static func occurrences(of needle: String, in haystack: String) -> Int {
+        guard !needle.isEmpty, !haystack.isEmpty else { return 0 }
+        var count = 0
+        var searchStart = haystack.startIndex
+        while searchStart < haystack.endIndex,
+              let found = haystack.range(
+                  of: needle,
+                  options: .caseInsensitive,
+                  range: searchStart..<haystack.endIndex
+              ) {
+            count += 1
+            searchStart = found.upperBound
+        }
+        return count
+    }
+
+    private static func formatIntMap(_ map: [Int: Int]) -> String {
+        guard !map.isEmpty else { return "{}" }
+        return "{" + map.keys.sorted().map { "\($0):\(map[$0] ?? 0)" }.joined(separator: ",") + "}"
+    }
+
+    private static func formatStringMap(_ map: [String: Int]) -> String {
+        guard !map.isEmpty else { return "{}" }
+        return "{" + map.keys.sorted().map { "\($0):\(map[$0] ?? 0)" }.joined(separator: ",") + "}"
     }
 }
