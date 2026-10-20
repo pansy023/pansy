@@ -332,6 +332,60 @@
 > —— SwiftUI `SecureField` 在弹窗触发重渲染后丢掉显示内容；它会让之后点「保存设置」
 > 把 Keychain 里的密码覆盖成空串。为避免与登录修复混在一起，留到下一轮单独修。
 >
+> **诚实提示（第十二次更新，2026-10-20 · 覆盖上面第十一次；本轮只加诊断，不动 Cookie 管理）**：
+>
+> **① 背景**：你反馈「同一账号、同一密码浏览器能登、App 报被跳回登录页」，我定位到
+> 「重定向那一跳的 `Set-Cookie` 因 URLSession 自动跟随而丢失」（第十一次更新的修复 `46386913`）。
+> 你随后选定**方案一**：在现有实现上只加「Cookie 名称 + 值长度」的诊断日志，
+> 不重构 Cookie 管理机制、不改登录判据、不动罐子的 Domain/Path/Secure。
+>
+> **② 上一提交 `46386913` 的 CI 是红的（如实记录）**：红在 `KebiaoCore 单元测试` 的 `swift test`，
+> 原因是**测试文件编译错误** —— `JwxtCookieRecorder` 里存储属性与计算属性都叫 `entries`
+> （`error: invalid redeclaration of 'entries'`，日志原文）。生产侧修复未受影响：
+> 同一次 run 的 `生成工程并编译 iOS App` 与 `App 单元测试 + XCUITest` 都是 success。
+> 本提交把该错误修掉（计算属性改名 `allEntries`）。
+>
+> **③ 新增诊断（逐跳、三段、互不混淆）**：`JwxtSession.log` 每一跳输出一行 ——
+> `罐=` 这一跳**发出前**罐子快照（直接可观测）、`发=` 这一跳**实际写进 URLRequest 的
+> `Cookie` 头**（没有则明确写「无 Cookie 头」，不省略）、`收=` 该跳响应带来的
+> 新增 `+名称:长度` / 覆盖 `~名称:长度` / 删除 `-名称`。
+> **红线**：只输出 Cookie 名称与值的**字符长度**，不输出值、不输出 `Set-Cookie` 原文、
+> 不输出 `encoded`；由单测 `testCookieDiagnosticsLogNamesAndLengthsButNeverValues` 兜底。
+> **观测边界（不含糊）**：`罐=`/`发=` 是构造点的直接观测；**URLSession 真正发到线上的请求头
+> 在本架构里没有第三方观测点** —— 只能依据「三处 Cookie 开关已关死」断言 `发=` 应等于线上值；
+> 这一点在**模拟桩测试里被直接观测**（桩记录它真正收到的 `Cookie` 头），**真机上未被直接观测**。
+> **一处如实说明**：罐子只有覆盖语义、没有删除路径，所以 `-名称` 这一支**当前不会出现** ——
+> 日志里没有 `-` 就等于「没有任何 Cookie 被删掉」，而不是「没打印」。
+>
+> **④ CI 状态（run `39345692284` / commit `d4c6c761`）**：**三个 job 全部 success**，
+> 非 success 的 step 数为 0（含末尾闸门「测试未全部通过即让工作流失败」= success）。
+> 数字全部取自日志原文：
+> - `KebiaoCore 单元测试`：`[278/278]` —— 278 条全部执行（275 + 本轮新增 3 条），
+>   三条新用例在日志里可见：`[33/278] testCookieDiagnosticsLogNamesAndLengthsButNeverValues`、
+>   `[37/278] testSendFollowsRedirectManuallyAndCarriesRedirectSetCookie`、
+>   `[38/278] testRedirectBlockerRefusesToFollowSoPerHopSetCookieStaysVisible`；
+> - App 层单元测试：`Executed 3 tests, with 0 failures`；
+> - XCUITest：**`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`**（828.598 s）。
+>
+> **⑤ 产物级自测（本轮 artifact 解包核验）**：`Kebiao-unsigned.ipa` **1,287,992 B**，
+> SHA256 `C074DC8482B8A381E56330E4561591C6587E2AA38AB0F971DAB0420BA24C5332`，
+> 已覆盖固定交付路径 `c:\Users\Pansy\TREA\IOS KEBIAO\Kebiao-unsigned.ipa`。
+> 主二进制 `Payload/Kebiao.app/Kebiao`（**2,379,168 B**）按 **UTF-8 字节序列**搜到
+> `【Cookie 诊断】`@`0xBE0C0`（**本轮新增的判别位**，上一版构建不可能有它）、
+> `【登录轨迹】`@`0xBDBC0`、`被跳回登录页`@`0xBDC00`、`KebiaoTransitionSlowdown`@`0xBC4A0`；
+> 阴性对照（本轮不可能存在的哨兵串）确认 **ABSENT**，证明这次搜索有区分力。
+>
+> **⑥ 仍然没有验证的**：**修复（关掉自动重定向）是否真的解决真机登录，只能在真机上验证** ——
+> 本机是 Windows、无 Xcode/模拟器/Swift 工具链，且被学校 WAF 按 IP 拦截（`/`、`/jsxsd/`、
+> `/Logon.do` 全返回 403），无法复现登录流程。CI 的 278 条单测 + 20 条 XCUITest
+> **证明不了**这条修复对真机教务登录有效。另有第二项：真机上「URLSession 实际发出的请求头」
+> 不可直接观测（边界见 ③）。
+>
+> **⑦ 按你要求本轮**没有**动**（各自留作独立待办）：Cookie 罐子的 Domain/Path/Secure 作用域；
+> `JwxtHTML.plainText` 把 `<style>/<script>` 正文算进页面文本（与 jsoup `.text()` 不同）；
+> 登录判据里「最终 URL 含 `xsrkxz` 即视为选课入口页」这一条（它会中途误判一次，
+> 但收尾跳的 `<title>登录` 兜底会把它挡回失败，最终没有把失败伪装成成功）。
+>
 > **诚实提示（第六次更新，2026-10-17 23:58 · 已被上面第七次覆盖）**：run `39046318485`（commit `5578acd`）
 > **三个 job 全部 success**（`KebiaoCore 单元测试` 6/6 步、`生成工程并编译 iOS App` 10/10 步、
 > `App 单元测试 + iPhone 模拟器 XCUITest` 15/15 步，含末尾闸门步骤
@@ -966,17 +1020,17 @@ HTML 解析与加密算法有单测（`JwxtTimetableParserTests` / `JwxtEncrypto
 
 ## 7. 状态口径（九种状态，**不能互相替代**）
 
-以下「当前」= CI run `39191051721` / commit `d43d82c9` 的真实结果（**轮 11**，以第 2 次 attempt 为准；第 1 次唯一那条红是偶发，见 §0「第十一次更新」④）。
+以下「当前」= CI run `39345692284` / commit `d4c6c761` 的真实结果（**轮 12**，2026-10-20；三个 job 全 success，非 success step 数为 0）。
 
 | 状态 | 当前 |
 | --- | --- |
 | 已完成静态代码检查 | ✅ 是（代码路径逐条读过） |
-| 已完成单元测试（`KebiaoCore`，`swift test`） | ✅ **是**：**275 条**全部执行完（日志跑到 `[275/275]`），整份日志无 failure/error，job = success |
+| 已完成单元测试（`KebiaoCore`，`swift test`） | ✅ **是**：**278 条**全部执行完（日志跑到 `[278/278]`），整份日志无 failure/error，job = success |
 | 已完成单元测试（App 层，`KebiaoTests`） | ✅ **是**：3 条，0 失败（`Executed 3 tests, with 0 failures`） |
 | 已成功编译 iOS 应用 | ✅ **是**：job「生成工程并编译 iOS App」success |
-| 已在模拟器启动应用 | ✅ **是**：iPhone 模拟器上真实跑完 20 条 XCUITest（`** TEST SUCCEEDED **`，865.656 s） |
-| 已通过 UI 自动化测试 | ✅ **是**：**20/20 全部通过**（`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`，865.656 s）；闸门步骤 = success，无残留失败用例 |
-| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1,281,160 B，SHA256 `44D104DD…F99D`） |
+| 已在模拟器启动应用 | ✅ **是**：iPhone 模拟器上真实跑完 20 条 XCUITest（`** TEST SUCCEEDED **`，828.598 s） |
+| 已通过 UI 自动化测试 | ✅ **是**：**20/20 全部通过**（`Executed 20 tests, with 0 failures` + `** TEST SUCCEEDED **`，828.598 s）；闸门步骤 = success，无残留失败用例 |
+| 已生成 IPA | ✅ **是**：artifact `Kebiao-unsigned-ipa`（1,287,992 B，SHA256 `C074DC84…5332`） |
 | 已签名 | ❓ 由你完成，助手侧无证据 |
 | 已在真机安装 | ❓ 由你完成，助手侧无证据 |
 | 已在真机运行 | ❓ 由你完成，助手侧无证据 |
