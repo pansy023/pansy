@@ -74,6 +74,10 @@ public struct JwxtTimetableSync: @unchecked Sendable {
     /// 一次「登录 → 抓课表」的完整尝试（每次新建 `JwxtSession`，与原版一致）。
     private func attempt(jwxtUrl: String, credentials: UserCredentials) async throws -> [Course] {
         let session = JwxtSession(baseURL: jwxtUrl, configuration: configuration)
+        // 诊断：把会话层每一跳的 **Cookie 名称 + 长度**收进来（不含值），
+        // 登录失败时随错误文案一起带出去 —— 这样真机截图就能看出 Cookie 是在哪一跳丢的。
+        let cookieLog = JwxtCookieDiagnosticBuffer()
+        session.log = { line in cookieLog.append(line) }
         let loginClient = JwxtLoginClient(session: session)
         let loginResult = await loginClient.login(
             username: credentials.username,
@@ -81,13 +85,17 @@ public struct JwxtTimetableSync: @unchecked Sendable {
         )
         guard loginResult.isLoggedIn else {
             log?("登录教务系统失败，请检查账号密码")
-            // 把**逐跳轨迹**一并带出去：真机上只看到一句「被跳回登录页」是定位不了根因的
-            // （2026-10-18/19 连续两轮就卡在这里）。轨迹里只有状态码 / 长度 / 标题 /
-            // 服务端原文片段 / **Cookie 名**，不含任何 Cookie 值与 `encoded`
-            // （红线见 `JwxtLoginClient.lastLoginTrace` 的注释）。
+            // 把**逐跳轨迹**与**逐跳 Cookie 诊断**一并带出去：真机上只看到一句
+            // 「被跳回登录页」是定位不了根因的（2026-10-18/19/20 连续三轮都卡在这里）。
+            // 轨迹里只有状态码 / 长度 / 标题 / 服务端原文片段 / **Cookie 名称与长度**，
+            // 不含任何 Cookie 值与 `encoded`
+            // （红线见 `JwxtLoginClient.lastLoginTrace` 与 `JwxtSession.log` 的注释）。
+            var parts = [loginResult.diagnostic]
             let trace = loginClient.lastLoginTraceText
-            let detail = trace.isEmpty ? loginResult.diagnostic : "\(loginResult.diagnostic)｜\(trace)"
-            throw JwxtSyncError.loginFailed(detail: detail)
+            if !trace.isEmpty { parts.append(trace) }
+            let cookies = cookieLog.sectionText
+            if !cookies.isEmpty { parts.append(cookies) }
+            throw JwxtSyncError.loginFailed(detail: parts.joined(separator: "｜"))
         }
 
         let parser = QiangzhiJwxtParser(session: session, log: log)
@@ -115,5 +123,36 @@ public enum JwxtSyncError: Error, LocalizedError, Equatable, Sendable {
         case let .loginFailed(detail):
             return "登录教务系统失败，请检查账号密码（诊断：\(detail)）"
         }
+    }
+}
+
+/// 收集会话层每一跳输出的 Cookie 诊断行（只含**名称 + 值长度**，不含值）。
+///
+/// 为什么要单独一个类：`JwxtSession.log` 的回调可能来自任意线程，
+/// 而 `JwxtTimetableSync` 是值类型、不能持有可变数组（`attempt` 也不是 `mutating`）。
+/// 用一个加锁的小缓冲把两边的约束拆开，不改变既有分层。
+final class JwxtCookieDiagnosticBuffer: @unchecked Sendable {
+
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func append(_ line: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        lines.append(line)
+    }
+
+    var isEmpty: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return lines.isEmpty
+    }
+
+    /// 拼成一段可读文本（每跳一行）；空则返回 `""`。
+    var sectionText: String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !lines.isEmpty else { return "" }
+        return "【Cookie 诊断】" + lines.joined(separator: "\n")
     }
 }

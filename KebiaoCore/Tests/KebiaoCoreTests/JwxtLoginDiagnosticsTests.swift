@@ -278,8 +278,68 @@ final class JwxtLoginDiagnosticsTests: XCTestCase {
         XCTAssertTrue(
             recorder.cookies(for: landing).contains { ($0 ?? "").contains("bzb_jsxsd=authed-session") },
             "重定向那一跳下发的会话 Cookie 必须被带到下一跳（否则 jsxsd 会话永远建立不起来）；"
-                + "实际请求：\(recorder.entries)"
+                + "实际请求：\(recorder.allEntries)"
         )
+    }
+
+    // MARK: - Cookie 诊断（只记名称与长度）
+
+    /// 诊断行必须同时给出**罐子（发出前）/ 准备发送 / 响应差异**三段，
+    /// 且**只出现 Cookie 名称与值长度，绝不出现值本身**。
+    ///
+    /// 为什么这条要被锁住：这三段是三种不同的事实，混在一起就会得出错误结论；
+    /// 而「名称 + 长度」是既够用又不泄露会话凭证的唯一安全口径。
+    func testCookieDiagnosticsLogNamesAndLengthsButNeverValues() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [JwxtRedirectStubURLProtocol.self]
+
+        let logon = UserCredentials.defaultJwxtUrl + "/Logon.do?method=logon"
+        // 故意给一个**可被搜索**的长值：只要日志里出现它，就说明泄露了。
+        let secret = "S3CR3TSESSIONVALUE0123456789abcdef"
+
+        JwxtRedirectStubURLProtocol.setResponder { request in
+            let url = request.url?.absoluteString ?? ""
+            if url == logon {
+                return (
+                    302,
+                    [
+                        "Location": "/jsxsd/framework/xsMainV.htmlx",
+                        "Set-Cookie": "bzb_jsxsd=\(secret); Path=/",
+                    ],
+                    Data()
+                )
+            }
+            return (200, [:], Data("<html><head><title>学生个人中心</title></head><body>欢迎</body></html>".utf8))
+        }
+        defer { JwxtRedirectStubURLProtocol.setResponder(nil) }
+
+        let session = JwxtSession(baseURL: UserCredentials.defaultJwxtUrl, configuration: configuration)
+        let log = JwxtLogCollector()
+        session.log = { log.append($0) }
+
+        _ = try await session.send(
+            logon,
+            options: JwxtSession.RequestOptions(method: "POST", form: [("userAccount", "20230001")])
+        )
+
+        let text = log.text
+        XCTAssertTrue(text.contains("罐="), "诊断必须给出「发出前的罐子」；实际：\(text)")
+        XCTAssertTrue(text.contains("发="), "诊断必须给出「准备发送的 Cookie」；实际：\(text)")
+        XCTAssertTrue(text.contains("收="), "诊断必须给出「响应带来的新增/覆盖」；实际：\(text)")
+        XCTAssertTrue(
+            text.contains("（无 Cookie 头）"),
+            "第 1 跳时罐子为空，必须**明确**记成「无 Cookie 头」而不是省略；实际：\(text)"
+        )
+        XCTAssertTrue(
+            text.contains("bzb_jsxsd:\(secret.count)"),
+            "必须记下焦点 Cookie 的名称与长度；实际：\(text)"
+        )
+        XCTAssertTrue(text.contains("#1 ") && text.contains("#2 "), "两跳都要有诊断行；实际：\(text)")
+
+        // 红线：值本身就是会话凭证，绝不能出现在诊断里。
+        XCTAssertFalse(text.contains(secret), "诊断绝不能输出 Cookie 值；实际：\(text)")
+        // 也不该出现任何我们没记过的「疑似值」片段。
+        XCTAssertFalse(text.contains("Path=/"), "诊断不该把 Set-Cookie 原文带出来；实际：\(text)")
     }
 }
 
@@ -374,9 +434,29 @@ private final class JwxtCookieRecorder: @unchecked Sendable {
         return entries.filter { $0.url == url }.map { $0.cookie }
     }
 
-    var entries: [(url: String, cookie: String?)] {
+    /// ⚠️ 名字不能叫 `entries`：那会与上面的存储属性同名，编译直接报
+    /// `invalid redeclaration of 'entries'`（CI run `39270196316` 已实测）。
+    var allEntries: [(url: String, cookie: String?)] {
         lock.lock()
         defer { lock.unlock() }
         return entries
+    }
+}
+
+/// 收集 `JwxtSession.log` 输出的诊断行（回调可能来自任意线程，故加锁）。
+private final class JwxtLogCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func append(_ line: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        lines.append(line)
+    }
+
+    var text: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return lines.joined(separator: "\n")
     }
 }

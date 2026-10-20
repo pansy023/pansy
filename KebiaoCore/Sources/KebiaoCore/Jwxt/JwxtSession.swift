@@ -66,6 +66,23 @@ public final class JwxtSession: @unchecked Sendable {
     /// 详见 `JwxtRedirectBlockingDelegate` 的注释与文件头第 2 点。
     private let redirectBlocker = JwxtRedirectBlockingDelegate()
 
+    /// 诊断出口：每一跳都往这里输出一行 **Cookie 名称 + 值长度**，用来在真机上定位
+    /// 「Cookie 是在哪一跳丢的」。默认 `nil`（丢弃，行为与之前完全一致）。
+    ///
+    /// ⚠️ 三条硬约束（由 `cookieSummary` / `cookieDelta` 保证，并由单测兜底）：
+    /// 1. **只输出名称与值长度**，绝不输出值本身 —— 值就是会话凭证，截图泄露等于会话被顶；
+    /// 2. 不输出任何请求头原文（`Cookie` 头原文含值）；
+    /// 3. 不输出密码、`encoded` 或其它派生串。
+    ///
+    /// 观测边界（RFC 式的老实说法，不要含糊）：`罐=`是罐子快照（直接可观测）；
+    /// `发=`是**我们构造 URLRequest 时实际写进去的那个 `Cookie` 头**（构造点直接可观测）；
+    /// 而**URLSession 真正发到线上的请求头，在本架构里没有第三方观测点** ——
+    /// 我们只能断言：本类已把 `httpShouldSetCookies = false`、`httpCookieStorage = nil`、
+    /// `httpCookieAcceptPolicy = .never` 三处关死，所以 URLSession **不会**自行增删 Cookie，
+    /// 因此 `发=`应等于线上值。这一点在模拟桩测试里被**直接观测**过
+    /// （`JwxtRedirectStubURLProtocol` 会记录它真正收到的 `Cookie` 头），在真机上则未被直接观测。
+    public var log: (@Sendable (String) -> Void)?
+
     /// 选课入口页 URL。命中选课网关后，它会成为后续请求的 Referer
     /// （`QiangzhiJwxtParser.java:123` 的 `this.timetableReferer = str3`）。
     private let refererBox: JwxtBox<String?>
@@ -232,8 +249,16 @@ public final class JwxtSession: @unchecked Sendable {
                 request.setValue(JwxtSession.userAgent, forHTTPHeaderField: "User-Agent")
             }
 
+            // 诊断用：本跳发出**前**的罐子快照，以及本跳实际准备写进 `Cookie` 头的那些 Cookie。
+            // 两者都只用于输出「名称 + 长度」（见 `emitCookieDiagnostic`），不落值。
+            let jarBeforeThisHop = jar.snapshot()
+            let hopDiagnosticURL = currentURL.absoluteString
+            let hopDiagnosticMethod = method
+            var sentCookiesThisHop: [String: String] = [:]
             if options.carriesCookies, let cookieHeader = jar.cookieHeader(), !cookieHeader.isEmpty {
                 request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+                // `cookieHeader()` 就是从同一个快照算出来的，所以「准备发送的」= 此刻的罐子内容。
+                sentCookiesThisHop = jarBeforeThisHop
             }
 
             // ⚠️ 必须传 `delegate:` —— 否则 `URLSession` 会**自己**把 302 跟掉，
@@ -250,6 +275,16 @@ public final class JwxtSession: @unchecked Sendable {
             // 先并 Cookie，**再**决定要不要跟 —— 这样重定向那一跳下发的会话 Cookie
             // 会跟着下一次循环的 `Cookie` 头一起发出去，与 jsoup / 浏览器的行为一致。
             jar.merge(responseCookies)
+
+            // 诊断：这一跳的 罐子（前）/ 准备发送 / 响应差异，三段各自独立记录。
+            emitCookieDiagnostic(
+                hop: hop,
+                method: hopDiagnosticMethod,
+                url: hopDiagnosticURL,
+                jarBefore: jarBeforeThisHop,
+                sent: sentCookiesThisHop,
+                jarAfter: jar.snapshot()
+            )
 
             let location = http.value(forHTTPHeaderField: "Location")
             let redirecting = (300...399).contains(http.statusCode) && location != nil
@@ -424,6 +459,70 @@ public final class JwxtSession: @unchecked Sendable {
     static func resolveLocation(_ location: String?, relativeTo base: URL) -> URL? {
         guard let location, !location.isEmpty else { return nil }
         return URL(string: location, relativeTo: base)?.absoluteURL
+    }
+
+    // MARK: - 诊断（只记名称与长度，绝不记值）
+
+    /// 罐子的可读摘要：`SERVERID:32,bzb_njw:44`；空则 `（空）`。
+    ///
+    /// **只输出名称与值的字符长度** —— 值本身（会话凭证）永不出现。
+    static func cookieSummary(_ cookies: [String: String]) -> String {
+        guard !cookies.isEmpty else { return "（空）" }
+        return cookies
+            .map { "\($0.key):\($0.value.count)" }
+            .sorted()
+            .joined(separator: ",")
+    }
+
+    /// 一跳前后的罐子差异：`+bzb_jsxsd:32`（新增）、`~bzb_jsxsd:36`（被覆盖，长度变了）、
+    /// `-name`（被删除）；无变化则 `（无变化）`。
+    ///
+    /// ⚠️ 当前罐子只有「覆盖」语义（`JwxtCookieJar.merge` 只做赋值，没有任何删除路径），
+    /// 所以 `-name` 这一支**现在不可能出现**。保留它是为了如实回答「有没有删除」这个问题：
+    /// 日志里看不到 `-`，就等于「没有任何 Cookie 被删掉」，而不是「没打印」。
+    static func cookieDelta(before: [String: String], after: [String: String]) -> String {
+        var pieces: [String] = []
+        for (name, value) in after {
+            if let old = before[name] {
+                if old != value { pieces.append("~\(name):\(value.count)") }
+            } else {
+                pieces.append("+\(name):\(value.count)")
+            }
+        }
+        for name in before.keys where after[name] == nil {
+            pieces.append("-\(name)")
+        }
+        guard !pieces.isEmpty else { return "（无变化）" }
+        return pieces.sorted().joined(separator: ",")
+    }
+
+    /// 输出一跳的 Cookie 诊断行（三段分列，**不把三种状态混为一谈**）：
+    ///
+    /// ```
+    /// [cookie] #3 POST https://…/Logon.do?method=logon 罐=SERVERID:32,bzb_njw:44
+    ///          | 发=SERVERID:32,bzb_njw:44 | 收=+bzb_jsxsd:32
+    /// ```
+    ///
+    /// - `罐=`：这一跳**发出前**罐子里的内容（直接可观测）。
+    /// - `发=`：这一跳**实际写进 URLRequest 的 `Cookie` 头**（构造点直接可观测）；
+    ///   没有写进去时明确记 `（无 Cookie 头）`，不省略。
+    /// - `收=`：这一跳响应带来的**新增/覆盖/删除**（合并进罐子之后算的差异）。
+    private func emitCookieDiagnostic(
+        hop: Int,
+        method: String,
+        url: String,
+        jarBefore: [String: String],
+        sent: [String: String],
+        jarAfter: [String: String]
+    ) {
+        guard let log else { return }
+        let sentText = sent.isEmpty ? "（无 Cookie 头）" : JwxtSession.cookieSummary(sent)
+        log(
+            "[cookie] #\(hop + 1) \(method) \(url)"
+                + " 罐=\(JwxtSession.cookieSummary(jarBefore))"
+                + " | 发=\(sentText)"
+                + " | 收=\(JwxtSession.cookieDelta(before: jarBefore, after: jarAfter))"
+        )
     }
 }
 
