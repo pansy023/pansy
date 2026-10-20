@@ -329,9 +329,10 @@ final class JwxtTimetableParserTests: XCTestCase {
         // ① 原文里的 tr / td 出现次数与本样本一致（2 行、4 个 td、4 个闭合）。
         XCTAssertTrue(report.contains("原文 tr=2"), report)
         XCTAssertTrue(report.contains("td=4开/4闭"), report)
-        // ② 解析树与原文一致 ⇒ 不应出现「结构不一致」告警。
+        // ② 解析树与**本表原文切片**一致 ⇒ 不应出现「结构不一致」告警。
         XCTAssertTrue(report.contains("树内 tr=2 td=4 嵌套 td=0"), report)
-        XCTAssertFalse(report.contains("解析树 td"), "结构正常时不应出现不一致告警：\(report)")
+        XCTAssertTrue(report.contains("本表原文 td=4"), report)
+        XCTAssertFalse(report.contains("⚠"), "本表结构一致时不应出现不一致告警：\(report)")
         // ③ 4 个单元格：3 个选中内容、1 个空内容被跳过。
         XCTAssertTrue(report.contains("选中=3"), report)
         XCTAssertTrue(report.contains("空内容跳过=1"), report)

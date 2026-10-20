@@ -175,28 +175,34 @@ struct AccountSyncSettingsView: View {
         do {
             let courses = try await sync.fetchFromJwxt(credentials: credentials)
             if courses.isEmpty {
-                // 成功拿到响应但一门课都没解析出来：完整诊断最有价值（哪一环丢的）。
-                syncStatusText = withParseDiagnostics("未获取到课表数据", sync.lastSyncDiagnostics)
+                // 成功拿到响应但一门课都没解析出来：解析诊断最有价值（哪一环丢的）。
+                syncStatusText = withDiagnostics("未获取到课表数据", [sync.lastSyncDiagnostics])
                 notice = Notice(text: "未获取到课表数据；已保留本地原有课程。")
             } else {
                 store.replaceAllCourses(with: courses)
                 let headline = "已从教务系统覆盖本地课表，共 \(courses.count) 门课程。"
-                syncStatusText = withParseDiagnostics(headline, sync.lastSyncDiagnostics)
+                // 解析诊断 + **展示层诊断**：真机诊断已证明同步链路没丢课（英语/体育/高等数学
+                // 都保存了），丢失发生在展示环节，所以必须把「已保存 vs 实际会画出来」一并报出来。
+                syncStatusText = withDiagnostics(
+                    headline,
+                    [sync.lastSyncDiagnostics, store.displayDiagnosticSummary()]
+                )
                 notice = Notice(text: headline)
             }
         } catch {
             let headline = "刷新失败: \(error.localizedDescription)"
-            syncStatusText = withParseDiagnostics(headline, sync.lastSyncDiagnostics)
+            syncStatusText = withDiagnostics(headline, [sync.lastSyncDiagnostics])
             notice = Notice(text: headline)
         }
     }
 
-    /// 把同步层的**分段诊断汇总**追加到状态文案后面（诊断为空时原样返回）。
+    /// 把若干段诊断（解析层 / 展示层）追加到状态文案后面；全为空时原样返回 `headline`。
     ///
     /// 弹窗保持简短（只放结论），完整诊断放在按钮下方的状态文本里 ——
-    /// 真机上要能直接看到「英语 / 体育 / 高等数学 分别在哪一环丢」。
-    private func withParseDiagnostics(_ headline: String, _ diagnostics: String) -> String {
-        diagnostics.isEmpty ? headline : headline + "\n\n" + diagnostics
+    /// 真机上要能直接看到「课在哪一环丢」。
+    private func withDiagnostics(_ headline: String, _ sections: [String]) -> String {
+        let body = sections.filter { !$0.isEmpty }.joined(separator: "\n\n")
+        return body.isEmpty ? headline : headline + "\n\n" + body
     }
 
     /// 把账号与同步草稿落地（原版也是 pending 态，点保存才写；`SettingsScreenKt.java:4675-4676`）。

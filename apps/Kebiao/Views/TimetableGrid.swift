@@ -73,8 +73,12 @@ struct TimetableGrid: View {
     /// `cellH = settings.courseCellHeightDp.dp`（`TimetableGridV2.kt:222`）。
     private var cellHeight: CGFloat { CGFloat(settings.courseCellHeightDp) }
 
-    /// 三个面板（上午 1-4 / 下午 5-8 / 晚上 9-rows），直接取 store 的派生值。
-    private var blockRanges: [ClosedRange<Int>] { store.periodBlocks }
+    /// 三个面板（上午 1-4 / 下午 5-8 / 晚上 9-rows）。
+    ///
+    /// ⚠ 这里用 `gridPeriodBlocks` 而不是 `periodBlocks`：后者是**作息方案**的行数，
+    /// 而网格必须保证「已保存的课一定能被画出来」（真机诊断确认：课表页有 6 个大节，
+    /// 第 6 大节 → 第 11–12 节，而出厂作息只有 10 节）。见 `TimetableStore.gridPeriodCount`。
+    private var blockRanges: [ClosedRange<Int>] { store.gridPeriodBlocks }
 
     /// 面板底色：`panelColor(dark:hasCustomBackground:)`（`TimetableGridV2.kt:126-135`）。
     /// 第二个参数走 `AppSettings.hasCustomBackground`（`!= null && isNotBlank()`，

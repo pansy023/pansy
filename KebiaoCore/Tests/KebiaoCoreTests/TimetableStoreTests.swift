@@ -488,6 +488,67 @@ final class TimetableStoreTests: XCTestCase {
         XCTAssertEqual(store.periodBlocks, [1...1])
     }
 
+    // MARK: - 展示层：网格必须画得出所有已保存课程（2026-10-20 真机诊断确认的缺口）
+
+    /// 作息方案 10 节，但教务导入把课放到了第 11–12 节（课表页有 6 个大节，
+    /// 第 6 大节 → 11–12 节）。网格行数必须抬到能画出它，否则这门课永远不会显示。
+    func testGridPeriodBlocksCoverCoursesBeyondProfileRowCount() {
+        let store = makeStore()
+        XCTAssertEqual(store.periodCount, 10)
+        XCTAssertEqual(store.periodBlocks, [1...4, 5...8, 9...10])
+        // 没有课超出作息方案时，网格口径与原口径一致（不改变既有行为）。
+        XCTAssertEqual(store.gridPeriodBlocks, [1...4, 5...8, 9...10])
+
+        store.replaceAllCourses(with: [
+            Course(
+                id: 0, name: "高等数学", teacher: "", location: "",
+                dayOfWeek: 3, startPeriod: 9, endPeriod: 10, color: 0,
+                weekRange: "1-16", startWeek: 1, endWeek: 16, isOdd: 0
+            ),
+            Course(
+                id: 0, name: "英语", teacher: "", location: "",
+                dayOfWeek: 3, startPeriod: 11, endPeriod: 12, color: 0,
+                weekRange: "1-16", startWeek: 1, endWeek: 16, isOdd: 0
+            ),
+        ])
+
+        XCTAssertEqual(store.gridPeriodCount, 12)
+        XCTAssertEqual(store.gridPeriodBlocks, [1...4, 5...8, 9...12])
+        // `periodCount` / `periodBlocks` 保持「作息方案」原义，避免影响课程编辑器那条口径。
+        XCTAssertEqual(store.periodCount, 10)
+        XCTAssertEqual(store.periodBlocks, [1...4, 5...8, 9...10])
+    }
+
+    func testDisplayDiagnosticSummaryReportsOffGridAndTargetCourses() {
+        let store = makeStore()
+        store.replaceAllCourses(with: [
+            Course(
+                id: 0, name: "大学英语(一)", teacher: "", location: "",
+                dayOfWeek: 2, startPeriod: 11, endPeriod: 12, color: 0,
+                weekRange: "1-16", startWeek: 1, endWeek: 16, isOdd: 0
+            ),
+        ])
+
+        let report = store.displayDiagnosticSummary()
+        XCTAssertTrue(report.contains("【展示层诊断】"), report)
+        XCTAssertTrue(report.contains("作息节数=10"), report)
+        XCTAssertTrue(report.contains("网格行数=12"), report)
+        XCTAssertTrue(report.contains("已存课程=1"), report)
+        XCTAssertTrue(report.contains("超出生效作息节数的课=1"), report)
+        XCTAssertTrue(report.contains("超出网格行数的课=0"), report)
+        XCTAssertTrue(
+            report.contains("英语 课数=1 首门 日=2 节=11-12 周次=1-16 单双=无"),
+            report
+        )
+        // 安全：只有计数与目标课关键词，不出现凭证 / Cookie / 令牌字样。
+        for banned in ["password", "useraccount", "encoded", "jsessionid", "bzb_jsxsd"] {
+            XCTAssertFalse(
+                report.lowercased().contains(banned),
+                "展示层诊断出现了不该有的敏感字样：\(banned)"
+            )
+        }
+    }
+
     // MARK: - 周次
 
     func testCurrentWeekFollowsSemesterStartDate() {

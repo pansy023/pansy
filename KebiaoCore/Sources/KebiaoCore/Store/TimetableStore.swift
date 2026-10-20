@@ -127,15 +127,76 @@ public final class TimetableStore: ObservableObject {
         max(timeSlots.count, 1)
     }
 
+    /// **网格实际要画的行数** = 作息方案行数 与「已保存课程的最大节次」取大者。
+    ///
+    /// 为什么需要它（2026-10-20 真机诊断确认的缺口）：教务课表页有 **6 个大节行**，解析时
+    /// 课程节次全部走「大节号 × 2」兜底（真机诊断 `节次区间=0/兜底 49`），于是第 6 大节
+    /// → 第 **11–12** 节；而出厂作息方案只有 10 节（`TimetableProfile.defaultProfile`），
+    /// 网格行数 = `periodCount` = 10、面板只到 `9...10` ⇒ **第 11–12 节的课永远不会被画出来**，
+    /// 表现为「同步成功、共 49 门，界面上却看不到这几门」。
+    /// 课程编辑器的下拉已经做了等价保证（`CourseEditorView.periodRange` 取
+    /// `max(store.periodCount, draft.endPeriod, …)`），网格这里补齐同一口径。
+    public var gridPeriodCount: Int {
+        max(periodCount, courses.map(\.endPeriod).max() ?? 0, 1)
+    }
+
     /// 一天拆成的三个面板：上午 `1...4`、下午 `5...8`、晚上 `9...rows`
     /// （`apk_work/kb/src2/TimetableGridV2.kt:362-421`）。
     public var periodBlocks: [ClosedRange<Int>] {
-        let rows = periodCount
+        TimetableStore.blocks(forRows: periodCount)
+    }
+
+    /// 网格**实际**使用的面板划分：行数改用 `gridPeriodCount`（见其说明）。
+    /// `TimetableGrid` 用这一个；`periodBlocks` 保持「作息方案」原义不变。
+    public var gridPeriodBlocks: [ClosedRange<Int>] {
+        TimetableStore.blocks(forRows: gridPeriodCount)
+    }
+
+    private static func blocks(forRows rows: Int) -> [ClosedRange<Int>] {
         guard rows >= 1 else { return [] }
         var blocks: [ClosedRange<Int>] = [1...min(rows, 4)]
         if rows > 4 { blocks.append(5...min(rows, 8)) }
         if rows > 8 { blocks.append(9...rows) }
         return blocks
+    }
+
+    /// 展示层诊断：把「已保存的课」与「课表实际会画出来的课」对齐。
+    ///
+    /// 存在的理由：2026-10-20 的真机诊断已证明**同步链路没丢课**（英语 / 体育 / 高等数学
+    /// 都 `最终=1/1/2`），丢失发生在**展示环节**。这段文本追加在同步状态文案后面，
+    /// 只记计数与目标课关键词（允许出现），不含教师 / 班级等个人信息。
+    ///
+    /// - Parameter keywords: 目标课关键词（包含式、大小写不敏感）。默认取
+    ///   `JwxtParseDiagnostics.targetKeywords`；测试可传入自己的关键词集。
+    public func displayDiagnosticSummary(
+        keywords: [String] = JwxtParseDiagnostics.targetKeywords
+    ) -> String {
+        let visible = coursesForDisplayedWeek()
+        let visibleIds = Set(visible.map { $0.course.id })
+
+        var lines = ["【展示层诊断】"]
+        lines.append(
+            "作息节数=\(periodCount) 网格行数=\(gridPeriodCount)"
+            + " 显示周次=\(displayedWeek) 已存课程=\(courses.count)"
+            + " 本周可见=\(visible.count) 非本周被滤=\(courses.count - visible.count)"
+            + " 超出生效作息节数的课=\(courses.filter { $0.endPeriod > periodCount }.count)"
+            + " 超出网格行数的课=\(courses.filter { $0.endPeriod > gridPeriodCount }.count)"
+        )
+        for keyword in keywords {
+            let matched = courses.filter { JwxtParseDiagnostics.contains($0.name, keyword) }
+            guard let first = matched.first else {
+                lines.append("  \(keyword) 无匹配课程")
+                continue
+            }
+            lines.append(
+                "  \(keyword) 课数=\(matched.count) 首门 日=\(first.dayOfWeek)"
+                + " 节=\(first.startPeriod)-\(first.endPeriod) 周次=\(first.weekRange)"
+                + " 单双=\(JwxtParseDiagnostics.parityText(first.isOdd))"
+                + " 本周可见=\(JwxtParseDiagnostics.yesNo(visibleIds.contains(first.id)))"
+                + " 超出网格=\(JwxtParseDiagnostics.yesNo(first.endPeriod > gridPeriodCount))"
+            )
+        }
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - 派生：周次与日期

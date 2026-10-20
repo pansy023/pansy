@@ -227,8 +227,9 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
         guard !rows.isEmpty else { return [] }
 
         // ② 表格结构：解析树里的 tr / td 总数与「td 嵌套」迹象。
-        //    与 ① 记下的「原文 <td 出现次数」对照，就是「解析前后结构是否一致」的证据。
-        recordTableTreeShape(table)
+        //    ⚠ 原文 <td 计数**只数这张表的切片**（见 recordTableTreeShape），
+        //    不能拿全文档的 <td 数去比 —— 那会把页面上其它表格也算进来。
+        recordTableTreeShape(table, in: document)
 
         var out: [Course] = []
         var periodRow = 0
@@ -263,10 +264,16 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
         return out
     }
 
-    /// 统计 `table` 子树在**解析树**里的 tr / td 数，以及含 `td` 后代的 `td` 个数（嵌套迹象）。
+    /// 统计 `table` 子树在**解析树**里的 tr / td 数、含 `td` 后代的 `td` 个数（嵌套迹象），
+    /// 以及**这张表**原文切片里的 `<td` 个数（用来判断「解析前后结构是否一致」）。
+    ///
+    /// ⚠ 这一版修掉了一个**会误报**的缺陷：原先拿「全文档」的 `<td` 计数去比单张表的树内
+    /// `td` 数，必然出现「树内 43 ≠ 原文 283」这种假告警（真机截图里就报了「存在漏闭合/嵌套错位迹象」，
+    /// 但那只是因为页面上还有别的表格）。现在只数**本表切片**；若本表没有显式 `</table>`，
+    /// 切片不可靠，就记 `-1`（= 无法比对），不猜。
     ///
     /// 只读遍历，返回与解析结果无关。
-    private func recordTableTreeShape(_ table: JwxtHTMLNode) {
+    private func recordTableTreeShape(_ table: JwxtHTMLNode, in document: JwxtHTMLDocument) {
         guard let diagnostics = diagnostics else { return }
         var trCount = 0
         var tdCount = 0
@@ -281,7 +288,23 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
                 }
             }
         }
-        diagnostics.recordTableTree(tr: trCount, td: tdCount, nestedTd: nestedTdCount)
+
+        let source = document.source
+        var rawTdInTable = -1
+        if table.startOffset < table.endOffset, table.endOffset <= source.count {
+            let lower = source.index(source.startIndex, offsetBy: table.startOffset)
+            let upper = source.index(source.startIndex, offsetBy: table.endOffset)
+            let slice = String(source[lower..<upper])
+            if slice.contains("</table") || slice.contains("</TABLE") {
+                rawTdInTable = JwxtParseDiagnostics.occurrences(of: "<td", in: slice)
+            }
+        }
+        diagnostics.recordTableTree(
+            tr: trCount,
+            td: tdCount,
+            nestedTd: nestedTdCount,
+            rawTdInTable: rawTdInTable
+        )
     }
 
     /// 单元格内容提取（`QiangzhiJwxtParser.java:229-292`，recon doc §4.3）。
@@ -1105,6 +1128,9 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
     private var treeTrCount = 0
     private var treeTdCount = 0
     private var treeNestedTdCount = 0
+    /// **本表切片**里的 `<td` 数（`-1` = 没取到可靠切片）。用来判断解析前后结构是否一致 ——
+    /// 不能用全文档计数（会误报，见 `recordTableTreeShape` 的注释）。
+    private var rawTdInTable = -1
     private var rowTdHistogram: [Int: Int] = [:]
     private var periodRowTdHistogram: [Int: Int] = [:]
     private var periodRows = 0
@@ -1182,12 +1208,13 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
         tableAttempts += 1
     }
 
-    func recordTableTree(tr: Int, td: Int, nestedTd: Int) {
+    func recordTableTree(tr: Int, td: Int, nestedTd: Int, rawTdInTable: Int) {
         lock.lock()
         defer { lock.unlock() }
         treeTrCount += tr
         treeTdCount += td
         treeNestedTdCount += nestedTd
+        if rawTdInTable >= 0 { self.rawTdInTable = rawTdInTable }
     }
 
     /// ② 一行：直接子 `td` 数量入直方图；非节次行按原因计入「被跳过」。
@@ -1337,14 +1364,16 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
         }
 
         // ② 表格结构
+        let rawInTableText = rawTdInTable >= 0 ? String(rawTdInTable) : "未取到"
         var second = "② 表格 尝试=\(tableAttempts) 节次行=\(periodRows)"
             + " 行-td 直方图=\(JwxtParseDiagnostics.formatIntMap(rowTdHistogram))"
             + " 节次行-td 直方图=\(JwxtParseDiagnostics.formatIntMap(periodRowTdHistogram))"
             + " 跳过行=\(JwxtParseDiagnostics.formatStringMap(skippedRows))"
             + " 树内 tr=\(treeTrCount) td=\(treeTdCount) 嵌套 td=\(treeNestedTdCount)"
-        if responseStatus != nil, treeTdCount != rawTdOpenCount {
-            // 解析前后结构不一致的直接证据：原文里的 <td 数与解析树里的 td 节点数对不上。
-            second += " ⚠ 解析树 td(\(treeTdCount)) ≠ 原文 <td(\(rawTdOpenCount))：存在漏闭合/嵌套错位迹象"
+            + " 本表原文 td=\(rawInTableText)"
+        if rawTdInTable >= 0, treeTdCount != rawTdInTable {
+            // 解析前后结构不一致的直接证据：**本表**原文里的 <td 数与解析树里的 td 节点数对不上。
+            second += " ⚠ 树内 td(\(treeTdCount)) ≠ 本表原文 <td(\(rawTdInTable))：这张表有漏闭合/嵌套错位迹象"
         }
         lines.append(second)
 
@@ -1399,6 +1428,15 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
     }
 
     static func yesNo(_ value: Bool) -> String { value ? "有" : "无" }
+
+    /// 单双周取值（`0/1/2`）的可读文本，供展示层诊断复用。
+    static func parityText(_ value: Int) -> String {
+        switch value {
+        case 1: return "单"
+        case 2: return "双"
+        default: return "无"
+        }
+    }
 
     /// 包含式、大小写不敏感匹配。
     static func contains(_ haystack: String, _ keyword: String) -> Bool {
