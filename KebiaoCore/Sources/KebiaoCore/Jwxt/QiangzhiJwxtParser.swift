@@ -256,9 +256,30 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
                 // ③ 单元格级目标课追踪：先看**整格文本**里有没有出现目标课关键词。
                 // 用整格文本而不是原始 innerHTML，是因为课名可能被标签切开（`英</font>语`）。
                 diagnostics?.recordCellText(cell.text())
+                let rawHTML = cell.innerHTML(in: document)
                 let content = extractDoCellContent(cell, in: document)
-                guard !QiangzhiJwxtParser.isBlank(content) else { continue }
-                out.append(contentsOf: parseKbContent(content, periodRow: periodRow, dayOfWeek: dayOfWeek))
+                let produced: [Course]
+                if QiangzhiJwxtParser.isBlank(content) {
+                    produced = []
+                } else {
+                    produced = parseKbContent(content, periodRow: periodRow, dayOfWeek: dayOfWeek)
+                }
+                // ②b 棋盘：这一格到底是「原始就空」还是「有课程痕迹却 0 门」。
+                // 只看「某时间段没显示课程」是分不清这两者的，必须逐格记。
+                diagnostics?.recordCellOutcome(
+                    periodRow: periodRow,
+                    dayOfWeek: dayOfWeek,
+                    courseCount: produced.count,
+                    looksLikeCourse: QiangzhiJwxtParser.cellLooksLikeCourse(rawHTML)
+                )
+                // ②c 0 门但格子非空时，记下这一格的**标记形态**（标签数 / class 列表 / 有无文本）。
+                // 这是「那几格到底用什么结构写的」的唯一线索，且不含任何课程原文。
+                if produced.isEmpty, !rawHTML.isEmpty {
+                    diagnostics?.recordEmptyCellMarkup(
+                        QiangzhiJwxtParser.markupSignature(rawHTML)
+                    )
+                }
+                out.append(contentsOf: produced)
             }
         }
         return out
@@ -314,6 +335,13 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
     /// 3. `trim` 后非空且 ≠ 字面量 `&nbsp;` → 返回；
     /// 4. 否则同样的「含 `<font`」逻辑走 `div.kbcontent1`；都不满足返回 `""`（`:270-291`）。
     public func extractDoCellContent(_ td: JwxtHTMLNode, in document: JwxtHTMLDocument) -> String {
+        // ③ 先记这一格**总共有几个候选 div**（两种 class 都算）。
+        // 原版逻辑每个单元格只会取**一个**候选（含 `title=教师` 的那个，否则第一个），
+        // 所以「候选数 ≥ 2」的格子意味着可能有课被这一取法吃掉了 —— 只计数，不改选择。
+        diagnostics?.recordCellCandidates(
+            kbcontent: document.select("div.kbcontent", from: td).count,
+            kbcontent1: document.select("div.kbcontent1", from: td).count
+        )
         let candidates = document.select("div.kbcontent", from: td).map { $0.innerHTML(in: document) }
             .filter { $0.range(of: "<font", options: .caseInsensitive) != nil }
 
@@ -1006,6 +1034,18 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
 
     // MARK: - 诊断：周次命中处形态
 
+    /// 一个单元格的原始 innerHTML 是否**看起来含课程**。
+    ///
+    /// 只做「是否有痕迹」的判断，不解析任何字段：命中 `(周)` / `周)` / `节]` / `<font` 任一即算有。
+    /// 用途是把「原始就是空格子」与「有课程痕迹但解析出 0 门」分开 —— 这两种情况
+    /// 在界面上同样表现为「该时间段没课」，但根因完全不同，修法也相反。
+    static func cellLooksLikeCourse(_ rawHTML: String) -> Bool {
+        guard !rawHTML.isEmpty else { return false }
+        if rawHTML.range(of: "<font", options: .caseInsensitive) != nil { return true }
+        return rawHTML.contains("(周)") || rawHTML.contains("周)")
+            || rawHTML.contains("节]") || rawHTML.contains("(单)") || rawHTML.contains("(双)")
+    }
+
     /// 截取「周次命中处」前后一小段，把字符替换成类别，得到**不含任何原文**的结构签名。
     ///
     /// 例：`1-16(周)` 命中 `1-16`、上下文是 `周次(节次)1-16(周)[01-02节]`（已删空格）→
@@ -1041,6 +1081,39 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
             out += symbol
         }
         return out
+    }
+
+    /// 一个「0 门但非空」单元格的**标记形态**签名（不含任何课程原文）。
+    ///
+    /// 形如 `div2/span0/font0/td0/txt有/cls:kbcontent,kbcontent2`：
+    /// 标签数说明它用什么元素承载内容，`cls` 说明用的哪个 class，
+    /// `txt` 说明去掉标签后还有没有文字 —— 三者合起来就能判断
+    /// 「这几格是原始空白」还是「用了我们没识别的结构」。
+    static func markupSignature(_ rawHTML: String) -> String {
+        func countTag(_ tag: String) -> Int { occurrences(of: "<" + tag, in: rawHTML) }
+        let classes = classNames(in: rawHTML)
+        let text = JwxtHTMLText.strippingTags(rawHTML).trimmingCharacters(in: .whitespacesAndNewlines)
+        return "div\(countTag("div"))/span\(countTag("span"))/font\(countTag("font"))"
+            + "/td\(countTag("td"))/txt\(text.isEmpty ? "无" : "有")"
+            + (classes.isEmpty ? "" : "/cls:\(classes.joined(separator: ","))")
+    }
+
+    /// 取出 HTML 里所有 `class` 属性值（去重后排序，忽略大小写取得原值）。
+    static func classNames(in rawHTML: String) -> [String] {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"class\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#,
+            options: [.caseInsensitive]
+        ) else { return [] }
+        let range = NSRange(rawHTML.startIndex..<rawHTML.endIndex, in: rawHTML)
+        var names: Set<String> = []
+        for match in regex.matches(in: rawHTML, options: [], range: range) {
+            for group in 1...3 {
+                guard let r = Range(match.range(at: group), in: rawHTML) else { continue }
+                let value = String(rawHTML[r]).trimmingCharacters(in: .whitespaces)
+                if !value.isEmpty { names.insert(value) }
+            }
+        }
+        return names.sorted()
     }
 
     /// 等价 Kotlin `replace("\u00A0", " ")`（`:1031`、`:1162` 的字面量就是 U+00A0）。
@@ -1195,6 +1268,10 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
     private var cellChosenFirst = 0
     private var cellKbcontent1Fallback = 0
     private var cellSkippedEmpty = 0
+    /// 每格候选 div 总数（`div.kbcontent` + `div.kbcontent1`）的直方图。
+    private var candidateHistogram: [Int: Int] = [:]
+    /// 候选数 ≥ 2 的格子数 —— 原版每格只取一个候选，这些格子可能被吃掉了课。
+    private var multiCandidateCells = 0
 
     // MARK: ④ 课程文本
     private var segmentTotal = 0
@@ -1211,6 +1288,16 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
     private var periodRangePrimary = 0
     private var periodRangeFallback = 0
     private var dayHistogram: [Int: Int] = [:]
+
+    // MARK: ②b 单元格棋盘（大节行 × 星期列）
+    /// 每格的**token**（`●` / `◐` / `·` / `!`），只用于汇总时的棋盘渲染。
+    private var cellGrid: [Int: [Int: String]] = [:]
+    /// 「原始 innerHTML 看起来含课程，却解析出 0 门」的格子数 —— 这是真正的解析缺陷。
+    private var cellLostCount = 0
+    /// 「原始 innerHTML 没有任何课程痕迹」的格子数 —— 源数据本来就空。
+    private var cellTrulyEmptyCount = 0
+    /// 「0 门但格子非空」的**标记形态**直方图（见 `markupSignature`）。
+    private var emptyCellMarkups: [String: Int] = [:]
 
     // MARK: ④ 课名抽取失败的原因（三分；原先在汇总里写死一句话，等于没测）
     private var nameFailNoFont = 0
@@ -1310,7 +1397,16 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
         }
     }
 
-    /// ③ 单元格选出了内容：记候选数、选中了哪一个、是否走了 `kbcontent1` 兜底。
+    /// ③ 记录本格候选 div 总数（`div.kbcontent` 与 `div.kbcontent1` 分别计数后求和）。
+    func recordCellCandidates(kbcontent: Int, kbcontent1: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let total = kbcontent + kbcontent1
+        candidateHistogram[total, default: 0] += 1
+        if total > 1 { multiCandidateCells += 1 }
+    }
+
+    /// ③ 记录一次性选中内容（候选数、选中哪个、是否 kbcontent1 兜底）。
     func recordCellChosen(candidates: Int, byTeacherTitle: Bool, usedKbcontent1Fallback: Bool) {
         lock.lock()
         defer { lock.unlock() }
@@ -1389,6 +1485,38 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         weekShapes[shape, default: 0] += 1
+    }
+
+    /// ②b 记一格：大节行 × 星期列 → 产出课程数。
+    ///
+    /// - Parameters:
+    ///   - periodRow: 大节序号（1 起）。
+    ///   - dayOfWeek: 星期（1 = 周一 … 7 = 周日）。
+    ///   - courseCount: 该格最终解析出的课程数。
+    ///   - looksLikeCourse: 该格原始 innerHTML 是否含课程痕迹（见 `cellLooksLikeCourse`）。
+    func recordCellOutcome(periodRow: Int, dayOfWeek: Int, courseCount: Int, looksLikeCourse: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        cellGrid[periodRow, default: [:]][dayOfWeek] = JwxtParseDiagnostics.cellToken(
+            courseCount: courseCount,
+            looksLikeCourse: looksLikeCourse
+        )
+        if courseCount == 0 {
+            if looksLikeCourse { cellLostCount += 1 } else { cellTrulyEmptyCount += 1 }
+        }
+    }
+
+    /// ②c 记一次「0 门但格子非空」的标记形态（不含任何课程原文）。
+    func recordEmptyCellMarkup(_ signature: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        emptyCellMarkups[signature, default: 0] += 1
+    }
+
+    /// 一格的显示符号：`●` 1 门、`◐` 2 门以上、`!` 有课程痕迹却 0 门、`·` 原始就空。
+    static func cellToken(courseCount: Int, looksLikeCourse: Bool) -> String {
+        if courseCount == 0 { return looksLikeCourse ? "!" : "·" }
+        return courseCount == 1 ? "●" : "◐"
     }
 
     /// ④ 周次**命中正则**（真值）。
@@ -1483,11 +1611,34 @@ public final class JwxtParseDiagnostics: @unchecked Sendable {
         }
         lines.append(second)
 
+        // ②b 单元格棋盘：直接回答「某时间段没课」是原始就空、还是有课却没解析出来。
+        if !cellGrid.isEmpty {
+            var grid = "②b 单元格棋盘(●=1门 ◐=2门以上 ·=原始就空 !=有课程痕迹却0门)"
+            grid += " 有痕迹却0门=\(cellLostCount) 原始就空=\(cellTrulyEmptyCount)"
+            let maxDay = cellGrid.values.flatMap { $0.keys }.max() ?? 5
+            for row in cellGrid.keys.sorted() {
+                var line = "\n  大节\(row)(第\(row * 2 - 1)-\(row * 2)节):"
+                for day in 1...maxDay {
+                    line += " " + (cellGrid[row]?[day] ?? "·")
+                }
+                grid += line
+            }
+            if !emptyCellMarkups.isEmpty {
+                // 只报「0 门但格子非空」的标记形态：它就是那几格到底长什么样的唯一线索。
+                grid += "\n  ②c 0门非空格形态=\(JwxtParseDiagnostics.formatStringMap(emptyCellMarkups))"
+            }
+            lines.append(grid)
+        }
+
         // ③ 单元格
         lines.append(
             "③ 单元格 候选累计=\(cellCandidateTotal) 选中=\(cellChosenCount)"
             + "(按 title=教师 命中 \(cellChosenByTeacherTitle) / 取首个 \(cellChosenFirst))"
             + " kbcontent1 兜底=\(cellKbcontent1Fallback) 空内容跳过=\(cellSkippedEmpty)"
+        )
+        lines.append(
+            "③b 每格候选 div 数直方图=\(JwxtParseDiagnostics.formatIntMap(candidateHistogram))"
+            + " 多候选格=\(multiCandidateCells)(原版每格只取一个候选)"
         )
 
         // ④ 课程文本

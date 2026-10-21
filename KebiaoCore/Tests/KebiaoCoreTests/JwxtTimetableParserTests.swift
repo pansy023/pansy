@@ -314,6 +314,85 @@ final class JwxtTimetableParserTests: XCTestCase {
         XCTAssertFalse(rangeShape.contains("周"), "形态签名不应保留原文汉字：\(rangeShape)")
     }
 
+    // MARK: - 星期 / 节次映射回归（覆盖用户报告的四个空档）
+
+    /// 教务「大节行 × 7 列」→ iOS 星期 / 节次 的映射必须逐格正确。
+    ///
+    /// 明确覆盖用户报告的四个时间段：**周一 1-2、周二 5-6、周三 1-2、周四 5-6**。
+    /// 规则（与 Android `:190-200` 一致）：列下标 0…6 → 星期 1…7（`i3 = i2 + 1`）；
+    /// 大节序号 `periodRow` 从 1 起，节次 = `periodRow*2-1 … periodRow*2`。
+    /// 这条用例能挡住「整列左移 / 右移」「节次从 0 开始」「大节与节次错位」三类回归。
+    func testDoStyleWeekdayAndPeriodMappingCoversReportedSlots() {
+        func courseCell(_ name: String) -> String {
+            "<td><div class=\"kbcontent\">"
+                + "<font title=\"周次(节次)\">1-16(周)</font><br>"
+                + "<font title=\"课程\" name=\"ktmc\">\(name)</font><br>"
+                + "<font title=\"教师\">张明</font></div></td>"
+        }
+
+        var rows: [String] = []
+        for periodRow in 1...6 {
+            var cells: [String] = []
+            for day in 1...7 {
+                // 只在四个被报告的时间段放课：大节 1（1-2 节）的周一/周三、
+                // 大节 3（5-6 节）的周二/周四。
+                let wanted = (periodRow == 1 && (day == 1 || day == 3))
+                    || (periodRow == 3 && (day == 2 || day == 4))
+                cells.append(wanted ? courseCell("课R\(periodRow)D\(day)") : "<td></td>")
+            }
+            rows.append("<tr><th>第\(periodRow)大节</th>" + cells.joined() + "</tr>")
+        }
+        let html = "<table id=\"timetable\">" + rows.joined() + "</table>"
+
+        let courses = parser.parseDoStyle(html)
+        XCTAssertEqual(courses.count, 4, "四个时间段应各解析出一门课")
+        let mapped = courses.map { "\($0.dayOfWeek):\($0.startPeriod)-\($0.endPeriod)" }
+        XCTAssertEqual(
+            Set(mapped),
+            ["1:1-2", "2:5-6", "3:1-2", "4:5-6"],
+            "星期 / 节次映射错位，实际：\(mapped)"
+        )
+        // 课名按列对应，进一步锁死「哪一门落在哪一列」。
+        let byName = Dictionary(uniqueKeysWithValues: courses.map { ($0.name, $0.dayOfWeek) })
+        XCTAssertEqual(byName["课R1D1"], 1)
+        XCTAssertEqual(byName["课R1D3"], 3)
+        XCTAssertEqual(byName["课R3D2"], 2)
+        XCTAssertEqual(byName["课R3D4"], 4)
+    }
+
+    /// 棋盘诊断必须区分两种「空格子」：原始就空（`·`）与**有课程痕迹却 0 门**（`!`）。
+    ///
+    /// 为什么这条重要：用户看到的都是「这个时间段没课」，但前者是源数据本来没有，
+    /// 后者才是我们要修的解析缺陷 —— 没有这个区分就只能在两个方向之间猜。
+    func testCellGridDistinguishesTrulyEmptyFromLostContent() {
+        let diagnostics = JwxtParseDiagnostics()
+        let stubbed = QiangzhiJwxtParser(baseURL: UserCredentials.defaultJwxtUrl)
+        stubbed.diagnostics = diagnostics
+
+        let html = """
+        <table id="timetable">
+        <tr><th>第一大节</th><td></td><td><div class="kbcontent">1-16(周)[01-02节] 无 font 的课</div></td><td><div class="kbcontent"><font title="周次(节次)">1-16(周)</font><br><font title="课程" name="ktmc">正常课</font></div></td></tr>
+        </table>
+        """
+
+        let courses = stubbed.parseDoStyle(html)
+        // 只有第三格能解析出课程；第二格有课程痕迹但没有任何 font → 0 门。
+        XCTAssertEqual(courses.count, 1)
+        XCTAssertEqual(courses.first?.dayOfWeek, 3)
+
+        let report = diagnostics.summary()
+        XCTAssertTrue(report.contains("②b 单元格棋盘"), report)
+        XCTAssertTrue(report.contains("有痕迹却0门=1"), report)
+        XCTAssertTrue(report.contains("原始就空=1"), report)
+        // 大节 1 → 第 1-2 节，三格依次是「空 / 有痕迹无课 / 1 门」。
+        XCTAssertTrue(report.contains("大节1(第1-2节): · ! ●"), report)
+        // ②c 那一格用了什么结构：1 个 div、0 个 font、有文本、class 是 kbcontent。
+        XCTAssertTrue(
+            report.contains("div1/span0/font0/td0/txt有/cls:kbcontent"),
+            "没有记下「0 门非空格」的标记形态：\(report)"
+        )
+    }
+
     func testFetchTimetableEmitsStageDiagnosticsAndTracksTargetCourses() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [JwxtStubURLProtocol.self]
