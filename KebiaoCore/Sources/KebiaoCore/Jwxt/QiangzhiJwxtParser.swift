@@ -34,6 +34,12 @@ import Foundation
 ///    （status / title / len / 特征串），让失败原因可读、可修。
 ///    另新增 `parseDoStyleRelaxed` 兜底：`table#timetable` 没命中时再遍历所有 `table`，
 ///    属严格超集（只在原版结果为空时才启用），用于页面结构漂移时的自愈。
+/// 5. **同一单元格里的全部候选都解析**（`extractDoCellContents`）：原版 `:258-291`
+///    每格只取**一个**候选（含 `title='教师'` 的，否则第一个）。2026-10-21 真机诊断证明
+///    真实页面每格有 **3 个**候选 div，而目标课追踪反复出现「同格多课只取其一」
+///    （英语/体育各 2 次、高等数学 1 次）—— 单取一个会稳定丢课。现在把每个含 `<font`
+///    的候选都交给 `parseKbContent`，同格内再用**既有的** `mergeDuplicateCourses` 收敛重复，
+///    教师/教室/周次等候选由 `extractCourseName` 原有黑名单自然过滤，规则未放宽。
 public final class QiangzhiJwxtParser: @unchecked Sendable {
 
     /// 与原版 `TAG` 一致的日志标签（`:61`）。
@@ -196,7 +202,7 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
     ///   才计为一个大节行；大节序号先自增再用，因此**从 1 开始**（`:190`）；
     /// - 列：该行的直接子 `td`，序号 `i3 = i2 + 1`，只有 `1 <= i3 < 8` 才处理
     ///   → **列 1…7 = 周一…周日**（列 0 是节次标签列，被跳过，`:200`）；
-    /// - 单元格：`extractDoCellContent` 非空才解析（`:202-206`）。
+    /// - 单元格：该格**全部**候选内容（见文件头「有意差异 5」）逐一解析（原版 `:202-206` 只取一个）；
     public func parseDoStyle(_ html: String) -> [Course] {
         let document = JwxtHTMLDocument.parse(html)
         guard let table = document.selectFirst("table#timetable") else { return [] }
@@ -257,12 +263,18 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
                 // 用整格文本而不是原始 innerHTML，是因为课名可能被标签切开（`英</font>语`）。
                 diagnostics?.recordCellText(cell.text())
                 let rawHTML = cell.innerHTML(in: document)
-                let content = extractDoCellContent(cell, in: document)
-                let produced: [Course]
-                if QiangzhiJwxtParser.isBlank(content) {
-                    produced = []
-                } else {
-                    produced = parseKbContent(content, periodRow: periodRow, dayOfWeek: dayOfWeek)
+                let contents = extractDoCellContents(cell, in: document)
+                var produced: [Course] = []
+                for content in contents {
+                    produced.append(
+                        contentsOf: parseKbContent(content, periodRow: periodRow, dayOfWeek: dayOfWeek)
+                    )
+                }
+                // 同一格里多个候选可能解析出同一门课（`div.kbcontent` 与 `div.kbcontent1` 重复、
+                // 或嵌套 div 内外两层）。用**既有的** `mergeDuplicateCourses`（`:795-811`）
+                // 在本格内先收敛，规则未改；跨格的全局去重仍在 `fetchTimetable` 里照旧执行。
+                if produced.count > 1 {
+                    produced = QiangzhiJwxtParser.mergeDuplicateCourses(produced)
                 }
                 // ②b 棋盘：这一格到底是「原始就空」还是「有课程痕迹却 0 门」。
                 // 只看「某时间段没显示课程」是分不清这两者的，必须逐格记。
@@ -330,59 +342,70 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
 
     /// 单元格内容提取（`QiangzhiJwxtParser.java:229-292`，recon doc §4.3）。
     ///
-    /// 1. `td.select("div.kbcontent")`，只留 `innerHTML` **忽略大小写含 `<font`** 的；
-    /// 2. 优先取 `innerHTML` 含 `title='教师'` / `title="教师"` / `title=教师` 的那个，否则取第一个；
-    /// 3. `trim` 后非空且 ≠ 字面量 `&nbsp;` → 返回；
-    /// 4. 否则同样的「含 `<font`」逻辑走 `div.kbcontent1`；都不满足返回 `""`（`:270-291`）。
+    /// ⚠️ **本方法现在只是兼容入口**：返回该格**第一个**候选内容（原版行为）。
+    /// 真正参与解析的是 [`extractDoCellContents`]，它会把同一格里的全部候选都返回 ——
+    /// 2026-10-21 真机证据表明真实页面每格有 **3 个**候选 div，而原版「每格只取一个」
+    /// 会丢掉同格里其余的课（目标课追踪显示英语/体育各丢 2 次、高等数学丢 1 次）。
     public func extractDoCellContent(_ td: JwxtHTMLNode, in document: JwxtHTMLDocument) -> String {
+        extractDoCellContents(td, in: document).first ?? ""
+    }
+
+    /// 该单元格里**所有**含 `<font` 的候选内容（`div.kbcontent` 在前，`div.kbcontent1` 在后，
+    /// 各自按文档顺序）。
+    ///
+    /// 为什么不再「只取一个」：原版 `:258-291` 优先取含 `title='教师'` 的候选，否则取第一个；
+    /// 真机诊断（2026-10-21）证明每格有 3 个候选，且三门目标课都出现了
+    /// 「同格多课只取其一」—— 单取一个必然丢课。
+    ///
+    /// 仍然遵守的三条边界（与用户要求逐条对应）：
+    /// 1. **不是所有 div 都算课**：只有 `div.kbcontent` / `div.kbcontent1` 且 `innerHTML` 含 `<font`
+    ///    （忽略大小写）、`trim` 后非空且不等于字面量 `&nbsp;` 的才算候选；
+    /// 2. **父子重复不重复产出**：同一格内内容字符串相同的候选只解析一次（`seen` 去重）；
+    ///    嵌套 div 导致「同一门课出现两次」的其余情形，由 `parseDoStyleTable` 用**既有的**
+    ///    `mergeDuplicateCourses` 收敛 —— 没有新增去重规则；
+    /// 3. **教师 / 教室 / 周次不会被当成课**：这些候选即使被列进来，`extractCourseName`
+    ///    的黑名单（`教师`/`教室`/`教学楼`/`周次(节次)`/`周次`/`班级`/`备注` 等）也会让该段
+    ///    解析不出课名，从而整段跳过（与原版同一规则，未放宽）。
+    public func extractDoCellContents(_ td: JwxtHTMLNode, in document: JwxtHTMLDocument) -> [String] {
+        let kbNodes = document.select("div.kbcontent", from: td)
+        let kb1Nodes = document.select("div.kbcontent1", from: td)
         // ③ 先记这一格**总共有几个候选 div**（两种 class 都算）。
-        // 原版逻辑每个单元格只会取**一个**候选（含 `title=教师` 的那个，否则第一个），
-        // 所以「候选数 ≥ 2」的格子意味着可能有课被这一取法吃掉了 —— 只计数，不改选择。
-        diagnostics?.recordCellCandidates(
-            kbcontent: document.select("div.kbcontent", from: td).count,
-            kbcontent1: document.select("div.kbcontent1", from: td).count
-        )
-        let candidates = document.select("div.kbcontent", from: td).map { $0.innerHTML(in: document) }
-            .filter { $0.range(of: "<font", options: .caseInsensitive) != nil }
+        diagnostics?.recordCellCandidates(kbcontent: kbNodes.count, kbcontent1: kb1Nodes.count)
 
-        var chosen: String?
-        var chosenByTeacherTitle = false
-        for html in candidates
-        where html.contains("title='教师'") || html.contains("title=\"教师\"") || html.contains("title=教师") {
-            chosen = html
-            chosenByTeacherTitle = true
-            break
-        }
-        if chosen == nil { chosen = candidates.first }
-
-        let trimmed = QiangzhiJwxtParser.kotlinTrim(chosen ?? "")
-        if !QiangzhiJwxtParser.isBlank(trimmed), trimmed != "&nbsp;" {
-            // ③ 单元格：候选数 / 选中了哪一个 / 是否走了 kbcontent1 兜底。
-            diagnostics?.recordCellChosen(
-                candidates: candidates.count,
-                byTeacherTitle: chosenByTeacherTitle,
-                usedKbcontent1Fallback: false
-            )
-            return trimmed
-        }
-
-        for node in document.select("div.kbcontent1", from: td) {
-            let html = node.innerHTML(in: document)
-            guard html.range(of: "<font", options: .caseInsensitive) != nil else { continue }
-            let fallback = QiangzhiJwxtParser.kotlinTrim(html)
-            if QiangzhiJwxtParser.isBlank(fallback) || fallback == "&nbsp;" {
-                diagnostics?.recordCellSkipped(candidates: candidates.count)
-                return ""
+        var contents: [String] = []
+        var seen: Set<String> = []
+        var usedKbcontent1 = false
+        let groups: [(nodes: [JwxtHTMLNode], isKbcontent1: Bool)] = [
+            (kbNodes, false),
+            (kb1Nodes, true),
+        ]
+        for group in groups {
+            for node in group.nodes {
+                let html = node.innerHTML(in: document)
+                guard html.range(of: "<font", options: .caseInsensitive) != nil else { continue }
+                let trimmed = QiangzhiJwxtParser.kotlinTrim(html)
+                guard !QiangzhiJwxtParser.isBlank(trimmed), trimmed != "&nbsp;" else { continue }
+                // 同一段内容只解析一次：嵌套 div 会让内外两层的 innerHTML 相同或包含关系，
+                // 这里至少挡住「完全相同」的那一类，剩下的交给既有去重规则。
+                guard seen.insert(trimmed).inserted else { continue }
+                contents.append(trimmed)
+                if group.isKbcontent1 { usedKbcontent1 = true }
             }
-            diagnostics?.recordCellChosen(
-                candidates: candidates.count,
-                byTeacherTitle: chosenByTeacherTitle,
-                usedKbcontent1Fallback: true
-            )
-            return fallback
         }
-        diagnostics?.recordCellSkipped(candidates: candidates.count)
-        return ""
+
+        if contents.isEmpty {
+            diagnostics?.recordCellSkipped(candidates: kbNodes.count)
+        } else {
+            // `candidates` 沿用旧口径（`div.kbcontent` 的个数），便于与历史诊断对比。
+            diagnostics?.recordCellChosen(
+                candidates: kbNodes.count,
+                byTeacherTitle: contents.contains {
+                    $0.contains("title='教师'") || $0.contains("title=\"教师\"") || $0.contains("title=教师")
+                },
+                usedKbcontent1Fallback: usedKbcontent1
+            )
+        }
+        return contents
     }
 
     // MARK: - 风格 B：parseWakeUpStyle（recon doc §4.4，兜底）

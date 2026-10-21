@@ -393,6 +393,106 @@ final class JwxtTimetableParserTests: XCTestCase {
         )
     }
 
+    // MARK: - 同格多候选（2026-10-21 真机证据：每格 3 个候选，原版只取一个）
+
+    /// 一个单元格里有两门**并列**的课（两个 `div.kbcontent`）⇒ 两门都要解析出来。
+    ///
+    /// 修复前：`extractDoCellContent` 只返回第一个候选 → 只剩 1 门。
+    func testCellWithTwoSiblingCandidatesParsesBothCourses() {
+        func courseDiv(name: String, week: String) -> String {
+            "<div class=\"kbcontent\">"
+                + "<font title=\"周次(节次)\">\(week)(周)</font><br>"
+                + "<font title=\"课程\" name=\"ktmc\">\(name)</font><br>"
+                + "<font title=\"教师\">张三</font></div>"
+        }
+        let html = """
+        <table id="timetable">
+        <tr><th>第一大节</th><td>\(courseDiv(name: "课程A", week: "1-16"))\(courseDiv(name: "课程B", week: "2-8"))</td></tr>
+        </table>
+        """
+
+        let courses = parser.parseDoStyle(html)
+        XCTAssertEqual(courses.count, 2, "同格两门课必须都解析出来，实际：\(courses.map(\.name))")
+        XCTAssertEqual(Set(courses.map(\.name)), ["课程A", "课程B"])
+        // 每门课各用**自己那一段**的周次，不能互相抄。
+        let weeks = Dictionary(uniqueKeysWithValues: courses.map { ($0.name, $0.weekRange) })
+        XCTAssertEqual(weeks["课程A"], "1-16")
+        XCTAssertEqual(weeks["课程B"], "2-8")
+        // 星期 / 节次仍按所在格：周一、第 1-2 节。
+        XCTAssertEqual(Set(courses.map { "\($0.dayOfWeek):\($0.startPeriod)-\($0.endPeriod)" }), ["1:1-2"])
+    }
+
+    /// 嵌套 div（外层 `kbcontent` 包住内层 `kbcontent1`）里的同一门课不能被算成两门。
+    func testNestedCandidatesDoNotDuplicateTheSameCourse() {
+        let html = """
+        <table id="timetable">
+        <tr><th>第一大节</th><td><div class="kbcontent"><font title="课程" name="ktmc">课程A</font><div class="kbcontent1"><font title="课程" name="ktmc">课程A</font></div></div></td></tr>
+        </table>
+        """
+
+        let courses = parser.parseDoStyle(html)
+        XCTAssertEqual(courses.count, 1, "嵌套候选里的同一门课必须只算一次，实际：\(courses.map(\.name))")
+        XCTAssertEqual(courses.first?.name, "课程A")
+    }
+
+    /// 只有周次 / 教师 / 教室的候选**不能**被当成课程。
+    func testCandidateWithOnlyTeacherOrWeekIsNotACourse() {
+        let html = """
+        <table id="timetable">
+        <tr><th>第一大节</th><td>
+        <div class="kbcontent"><font title="周次(节次)">1-16(周)</font><br><font title="教师">张三</font><br><font title="教室">A101</font></div>
+        <div class="kbcontent1"><font title="课程" name="ktmc">真课程</font><br><font title="教师">王五</font></div>
+        </td></tr>
+        </table>
+        """
+
+        let courses = parser.parseDoStyle(html)
+        XCTAssertEqual(courses.count, 1, "教师/教室/周次候选不应成为课程，实际：\(courses.map(\.name))")
+        XCTAssertEqual(courses.first?.name, "真课程")
+    }
+
+    /// **四个空白格**的针对性回归：每格的**第一个**候选只有周次/教师（无课名），
+    /// 真正的课程在后面的候选里。
+    ///
+    /// 这正是真机现场的形状：原版「每格只取一个候选」取到那个没有课名的候选 ⇒
+    /// 整格 0 门 ⇒ 界面上表现为「该时间段没有课」。修复后四格都必须有课。
+    func testReportedBlankSlotsAreFilledWhenCourseSitsInLaterCandidate() {
+        func blankFirstCandidate() -> String {
+            "<div class=\"kbcontent\"><font title=\"周次(节次)\">1-16(周)</font><br><font title=\"教师\">张三</font></div>"
+        }
+        func realCourse(_ name: String) -> String {
+            "<div class=\"kbcontent1\"><font title=\"课程\" name=\"ktmc\">\(name)</font><br><font title=\"教师\">李四</font></div>"
+        }
+
+        // 被报告的四个时间段：大节 1（1-2 节）的周一/周三、大节 3（5-6 节）的周二/周四。
+        func cell(periodRow: Int, day: Int) -> String {
+            let wanted = (periodRow == 1 && (day == 1 || day == 3))
+                || (periodRow == 3 && (day == 2 || day == 4))
+            guard wanted else { return "<td></td>" }
+            return "<td>" + blankFirstCandidate() + realCourse("课R\(periodRow)D\(day)") + "</td>"
+        }
+
+        var rows: [String] = []
+        for periodRow in 1...6 {
+            var cells: [String] = []
+            for day in 1...7 { cells.append(cell(periodRow: periodRow, day: day)) }
+            rows.append("<tr><th>第\(periodRow)大节</th>" + cells.joined() + "</tr>")
+        }
+        let html = "<table id=\"timetable\">" + rows.joined() + "</table>"
+
+        let courses = parser.parseDoStyle(html)
+        XCTAssertEqual(courses.count, 4, "四个时间段都必须解析出课，实际：\(courses.map(\.name))")
+        XCTAssertEqual(
+            Set(courses.map { "\($0.dayOfWeek):\($0.startPeriod)-\($0.endPeriod)" }),
+            ["1:1-2", "2:5-6", "3:1-2", "4:5-6"]
+        )
+        let byName = Dictionary(uniqueKeysWithValues: courses.map { ($0.name, $0.dayOfWeek) })
+        XCTAssertEqual(byName["课R1D1"], 1)
+        XCTAssertEqual(byName["课R3D2"], 2)
+        XCTAssertEqual(byName["课R1D3"], 3)
+        XCTAssertEqual(byName["课R3D4"], 4)
+    }
+
     func testFetchTimetableEmitsStageDiagnosticsAndTracksTargetCourses() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [JwxtStubURLProtocol.self]
