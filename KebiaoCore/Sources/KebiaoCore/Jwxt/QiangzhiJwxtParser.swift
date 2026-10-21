@@ -1090,7 +1090,9 @@ public final class QiangzhiJwxtParser: @unchecked Sendable {
     /// `txt` 说明去掉标签后还有没有文字 —— 三者合起来就能判断
     /// 「这几格是原始空白」还是「用了我们没识别的结构」。
     static func markupSignature(_ rawHTML: String) -> String {
-        func countTag(_ tag: String) -> Int { occurrences(of: "<" + tag, in: rawHTML) }
+        func countTag(_ tag: String) -> Int {
+            JwxtParseDiagnostics.occurrences(of: "<" + tag, in: rawHTML)
+        }
         let classes = classNames(in: rawHTML)
         let text = JwxtHTMLText.strippingTags(rawHTML).trimmingCharacters(in: .whitespacesAndNewlines)
         return "div\(countTag("div"))/span\(countTag("span"))/font\(countTag("font"))"
